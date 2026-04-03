@@ -124,6 +124,7 @@ type StatusComponent struct {
 	DisplayName string `json:"display_name"`            // label shown on the status page
 	Description string `json:"description,omitempty"`
 	GroupID     string `json:"group_id,omitempty"`       // optional: ComponentGroup.ID
+	GroupName   string `json:"group_name,omitempty"`     // optional: resolved to GroupID by server
 	Order       int    `json:"order"`
 }
 
