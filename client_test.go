@@ -189,7 +189,7 @@ func TestAPIError_Unauthorized(t *testing.T) {
 		})
 	})
 
-	_, err := client.GetAccount(context.Background())
+	_, err := client.GetOrganization(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
 	}

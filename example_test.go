@@ -14,11 +14,14 @@ func ExampleNewClient() {
 		spork.WithAPIKey(os.Getenv("SPORK_API_KEY")),
 	)
 
-	account, err := client.GetAccount(context.Background())
+	org, err := client.GetOrganization(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Logged in as %s (%s plan)\n", account.Email, account.Plan)
+	fmt.Printf("Organization: %s\n", org.Name)
+	if sub := org.Subscription("monitoring"); sub != nil {
+		fmt.Printf("Plan: %s, Monitors: %d\n", sub.Plan, sub.EntitlementInt("monitor_limit"))
+	}
 }
 
 func ExampleClient_CreateMonitor() {
