@@ -34,16 +34,114 @@ type Monitor struct {
 	UpdatedAt       string            `json:"updated_at,omitempty"`       // read-only
 }
 
-// Account represents the authenticated user's account info.
-type Account struct {
-	UID              string    `json:"uid"`
-	Email            string    `json:"email"`
-	Plan             string    `json:"plan"`               // "free", "starter", "pro", etc.
-	MonitorLimit     int       `json:"monitor_limit"`       // max monitors allowed by plan
-	CheckIntervalS   int       `json:"check_interval_s"`    // minimum check interval allowed by plan
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	HasPaymentMethod bool      `json:"has_payment_method"`
+// Organization represents the authenticated user's organization.
+type Organization struct {
+	ID            string         `json:"id"`
+	Name          string         `json:"name,omitempty"`
+	Subscriptions []Subscription `json:"subscriptions"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	User          *OrganizationUser `json:"user,omitempty"`
+}
+
+// Subscription represents a product subscription within an organization.
+type Subscription struct {
+	Product           string         `json:"product"`
+	Plan              string         `json:"plan"`
+	Entitlements      map[string]any `json:"entitlements"`
+	HasPaymentMethod  bool           `json:"has_payment_method"`
+	CancelAtPeriodEnd bool           `json:"cancel_at_period_end"`
+	CancelAt          *time.Time     `json:"cancel_at,omitempty"`
+	TrialEndsAt       *time.Time     `json:"trial_ends_at,omitempty"`
+}
+
+// OrganizationUser is the authenticated user's info within an organization.
+type OrganizationUser struct {
+	UID   string `json:"uid"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
+}
+
+// Subscription returns the subscription for the given product, or nil.
+func (o *Organization) Subscription(product string) *Subscription {
+	for i := range o.Subscriptions {
+		if o.Subscriptions[i].Product == product {
+			return &o.Subscriptions[i]
+		}
+	}
+	return nil
+}
+
+// EntitlementInt returns the integer value of an entitlement, or 0 if missing.
+// Handles float64 from JSON unmarshaling.
+func (s *Subscription) EntitlementInt(key string) int {
+	if s == nil {
+		return 0
+	}
+	v, ok := s.Entitlements[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	default:
+		return 0
+	}
+}
+
+// EntitlementBool returns the boolean value of an entitlement, or false if missing.
+func (s *Subscription) EntitlementBool(key string) bool {
+	if s == nil {
+		return false
+	}
+	v, ok := s.Entitlements[key]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
+}
+
+// Member represents a member of an organization.
+type Member struct {
+	ID        string    `json:"id"`
+	Email     string    `json:"email"`
+	Role      string    `json:"role"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// InviteMemberInput is the request body for inviting a member.
+type InviteMemberInput struct {
+	Email string `json:"email"`
+	Role  string `json:"role,omitempty"`
+}
+
+// TransferOwnershipInput is the request body for transferring ownership.
+type TransferOwnershipInput struct {
+	MemberID string `json:"member_id"`
+}
+
+// TransferOwnershipResult is the response for a successful ownership transfer.
+type TransferOwnershipResult struct {
+	NewOwner      Member `json:"new_owner"`
+	PreviousOwner Member `json:"previous_owner"`
+}
+
+// OrganizationUsage contains usage metrics for each product subscription.
+type OrganizationUsage struct {
+	Subscriptions []SubscriptionUsage `json:"subscriptions"`
+}
+
+// SubscriptionUsage contains usage metrics for a single product subscription.
+type SubscriptionUsage struct {
+	Product string         `json:"product"`
+	Plan    string         `json:"plan"`
+	Usage   map[string]int `json:"usage"`
 }
 
 // APIKey represents an API key for programmatic access.
