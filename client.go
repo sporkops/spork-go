@@ -75,7 +75,7 @@ const (
 )
 
 // Version is the SDK version, used in the User-Agent header.
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 // Client is an HTTP client for the Spork API.
 type Client struct {
