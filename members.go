@@ -17,7 +17,7 @@ func (c *Client) ListMembers(ctx context.Context) ([]Member, error) {
 // InviteMember invites a user to the organization by email.
 func (c *Client) InviteMember(ctx context.Context, input *InviteMemberInput) (*Member, error) {
 	var result Member
-	if err := c.doSingle(ctx, "POST", "/members", input, &result); err != nil {
+	if err := c.doSingle(ctx, "POST", "/members/invite", input, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
