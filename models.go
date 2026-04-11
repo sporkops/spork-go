@@ -23,15 +23,28 @@ type Monitor struct {
 	Headers         map[string]string `json:"headers,omitempty"`         // custom HTTP headers
 	Body            string            `json:"body,omitempty"`            // request body for POST/PUT checks
 	Keyword         string            `json:"keyword,omitempty"`         // keyword to search for in response
-	KeywordType     string            `json:"keyword_type,omitempty"`    // "contains" or "not_contains"
+	KeywordType     string            `json:"keyword_type,omitempty"`    // "exists" or "not_exists"
 	SSLWarnDays     int               `json:"ssl_warn_days,omitempty"`   // days before SSL expiry to alert
 	AlertChannelIDs []string          `json:"alert_channel_ids,omitempty"`
 	Tags            []string          `json:"tags,omitempty"`
 	Paused          *bool             `json:"paused,omitempty"`
-	Status          string            `json:"status,omitempty"`           // read-only: "up", "down", "degraded", "paused"
-	LastCheckedAt   string            `json:"last_checked_at,omitempty"`  // read-only
-	CreatedAt       string            `json:"created_at,omitempty"`       // read-only
-	UpdatedAt       string            `json:"updated_at,omitempty"`       // read-only
+	Status            string                    `json:"status,omitempty"`              // read-only: "up", "down", "degraded", "paused", "pending"
+	UptimePercentage  float64                   `json:"uptime_percentage,omitempty"`   // read-only: 24-hour uptime percentage (0-100)
+	AvgResponseTimeMs int64                     `json:"avg_response_time_ms,omitempty"` // read-only: 24-hour average response time in ms
+	LastCheckedAt     string                    `json:"last_checked_at,omitempty"`     // read-only
+	NextCheckAt       string                    `json:"next_check_at,omitempty"`       // read-only
+	LiveStatus        map[string]RegionStatus   `json:"live_status,omitempty"`         // read-only: per-region live check status
+	CreatedAt         string                    `json:"created_at,omitempty"`          // read-only
+	UpdatedAt         string                    `json:"updated_at,omitempty"`          // read-only
+}
+
+// RegionStatus represents the live check status for a specific monitoring region.
+type RegionStatus struct {
+	Status         string `json:"status"`           // "up" or "down"
+	ResponseTimeMs int64  `json:"response_time_ms"`
+	HTTPCode       int    `json:"http_code"`
+	CheckedAt      string `json:"checked_at"`
+	Error          string `json:"error,omitempty"`
 }
 
 // Organization represents the authenticated user's organization.
@@ -51,8 +64,9 @@ type Subscription struct {
 	Entitlements      map[string]any `json:"entitlements"`
 	HasPaymentMethod  bool           `json:"has_payment_method"`
 	CancelAtPeriodEnd bool           `json:"cancel_at_period_end"`
-	CancelAt          *time.Time     `json:"cancel_at,omitempty"`
-	TrialEndsAt       *time.Time     `json:"trial_ends_at,omitempty"`
+	CancelAt             *time.Time  `json:"cancel_at,omitempty"`
+	TrialEndsAt          *time.Time  `json:"trial_ends_at,omitempty"`
+	TrialDaysRemaining   *int        `json:"trial_days_remaining,omitempty"`
 }
 
 // OrganizationUser is the authenticated user's info within an organization.
@@ -107,12 +121,16 @@ func (s *Subscription) EntitlementBool(key string) bool {
 
 // Member represents a member of an organization.
 type Member struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	Role      string    `json:"role"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID             string     `json:"id"`
+	OrganizationID string     `json:"organization_id"`
+	UserID         string     `json:"user_id,omitempty"`  // Firebase UID (empty while invite is pending)
+	Email          string     `json:"email"`
+	Role           string     `json:"role"`               // "owner" or "member"
+	Status         string     `json:"status"`             // "pending" or "accepted"
+	InvitedBy      string     `json:"invited_by,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"` // nil once accepted; invites expire after 7 days
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 // InviteMemberInput is the request body for inviting a member.
@@ -170,12 +188,15 @@ type MonitorResult struct {
 
 // AlertChannel represents a notification channel for monitor alerts.
 //
-// Supported types: "email", "webhook". The Config map holds type-specific
-// settings (e.g., {"to": "oncall@example.com"} for email channels).
+// Supported types: "email", "webhook", "slack", "discord", "teams",
+// "pagerduty", "telegram", "googlechat". The Config map holds type-specific
+// settings (e.g., {"to": "oncall@example.com"} for email, {"url": "..."} for
+// slack/discord/teams/googlechat/webhook, {"integration_key": "..."} for
+// pagerduty, {"bot_token": "...", "chat_id": "..."} for telegram).
 type AlertChannel struct {
 	ID                 string            `json:"id,omitempty"`
 	Name               string            `json:"name"`
-	Type               string            `json:"type"`   // "email" or "webhook"
+	Type               string            `json:"type"`   // "email", "webhook", "slack", "discord", "teams", "pagerduty", "telegram", "googlechat"
 	Config             map[string]string `json:"config"` // type-specific configuration
 	Verified           bool              `json:"verified,omitempty"`            // read-only
 	Secret             string            `json:"secret,omitempty"`              // read-only: webhook signing secret
@@ -194,7 +215,7 @@ type StatusPage struct {
 	ComponentGroups         []ComponentGroup  `json:"component_groups,omitempty"`  // optional grouping
 	CustomDomain            string            `json:"custom_domain,omitempty"`     // read-only: use SetCustomDomain
 	DomainStatus            string            `json:"domain_status,omitempty"`     // read-only: "pending", "active"
-	Theme                   string            `json:"theme,omitempty"`             // "light" or "dark"
+	Theme                   string            `json:"theme,omitempty"`             // "light", "dark", "blue", "midnight"
 	AccentColor             string            `json:"accent_color,omitempty"`      // hex color, e.g. "#4F46E5"
 	FontFamily              string            `json:"font_family,omitempty"`
 	HeaderStyle             string            `json:"header_style,omitempty"`
