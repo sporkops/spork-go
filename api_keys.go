@@ -24,13 +24,13 @@ func (c *Client) CreateAPIKey(ctx context.Context, input *CreateAPIKeyInput) (*A
 // transparently paginating through all pages.
 func (c *Client) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	return collectAll[APIKey](func(opts ListOptions) ([]APIKey, PageMeta, error) {
-		return c.ListAPIKeysPage(ctx, opts)
+		return c.ListAPIKeysWithOptions(ctx, opts)
 	})
 }
 
-// ListAPIKeysPage returns a single page of API keys along with pagination
+// ListAPIKeysWithOptions returns a single page of API keys along with pagination
 // metadata. Use ListAPIKeys if you want every record.
-func (c *Client) ListAPIKeysPage(ctx context.Context, opts ListOptions) ([]APIKey, PageMeta, error) {
+func (c *Client) ListAPIKeysWithOptions(ctx context.Context, opts ListOptions) ([]APIKey, PageMeta, error) {
 	var result []APIKey
 	path := "/api-keys?" + opts.query()
 	meta, err := c.doList(ctx, "GET", path, nil, &result)

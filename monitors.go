@@ -19,16 +19,16 @@ func (c *Client) CreateMonitor(ctx context.Context, m *Monitor) (*Monitor, error
 // transparently paginating through all pages.
 //
 // Prior to v0.4.0 this method silently returned only the first 100 monitors.
-// If you need explicit page control (e.g., for a UI), use ListMonitorsPage.
+// If you need explicit page control (e.g., for a UI), use ListMonitorsWithOptions.
 func (c *Client) ListMonitors(ctx context.Context) ([]Monitor, error) {
 	return collectAll[Monitor](func(opts ListOptions) ([]Monitor, PageMeta, error) {
-		return c.ListMonitorsPage(ctx, opts)
+		return c.ListMonitorsWithOptions(ctx, opts)
 	})
 }
 
-// ListMonitorsPage returns a single page of monitors along with pagination
+// ListMonitorsWithOptions returns a single page of monitors along with pagination
 // metadata. Use ListMonitors if you want every record.
-func (c *Client) ListMonitorsPage(ctx context.Context, opts ListOptions) ([]Monitor, PageMeta, error) {
+func (c *Client) ListMonitorsWithOptions(ctx context.Context, opts ListOptions) ([]Monitor, PageMeta, error) {
 	var result []Monitor
 	path := "/monitors?" + opts.query()
 	meta, err := c.doList(ctx, "GET", path, nil, &result)

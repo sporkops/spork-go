@@ -20,13 +20,13 @@ func (c *Client) CreateIncident(ctx context.Context, statusPageID string, inc *I
 // paginating through all pages.
 func (c *Client) ListIncidents(ctx context.Context, statusPageID string) ([]Incident, error) {
 	return collectAll[Incident](func(opts ListOptions) ([]Incident, PageMeta, error) {
-		return c.ListIncidentsPage(ctx, statusPageID, opts)
+		return c.ListIncidentsWithOptions(ctx, statusPageID, opts)
 	})
 }
 
-// ListIncidentsPage returns a single page of incidents for a status page
+// ListIncidentsWithOptions returns a single page of incidents for a status page
 // along with pagination metadata. Use ListIncidents if you want every record.
-func (c *Client) ListIncidentsPage(ctx context.Context, statusPageID string, opts ListOptions) ([]Incident, PageMeta, error) {
+func (c *Client) ListIncidentsWithOptions(ctx context.Context, statusPageID string, opts ListOptions) ([]Incident, PageMeta, error) {
 	var result []Incident
 	path := "/status-pages/" + url.PathEscape(statusPageID) + "/incidents?" + opts.query()
 	meta, err := c.doList(ctx, "GET", path, nil, &result)
@@ -92,13 +92,13 @@ func (c *Client) CreateIncidentUpdate(ctx context.Context, incidentID string, up
 // transparently paginating through all pages.
 func (c *Client) ListIncidentUpdates(ctx context.Context, incidentID string) ([]IncidentUpdate, error) {
 	return collectAll[IncidentUpdate](func(opts ListOptions) ([]IncidentUpdate, PageMeta, error) {
-		return c.ListIncidentUpdatesPage(ctx, incidentID, opts)
+		return c.ListIncidentUpdatesWithOptions(ctx, incidentID, opts)
 	})
 }
 
-// ListIncidentUpdatesPage returns a single page of incident updates along
+// ListIncidentUpdatesWithOptions returns a single page of incident updates along
 // with pagination metadata. Use ListIncidentUpdates if you want every record.
-func (c *Client) ListIncidentUpdatesPage(ctx context.Context, incidentID string, opts ListOptions) ([]IncidentUpdate, PageMeta, error) {
+func (c *Client) ListIncidentUpdatesWithOptions(ctx context.Context, incidentID string, opts ListOptions) ([]IncidentUpdate, PageMeta, error) {
 	var result []IncidentUpdate
 	path := "/incidents/" + url.PathEscape(incidentID) + "/updates?" + opts.query()
 	meta, err := c.doList(ctx, "GET", path, nil, &result)

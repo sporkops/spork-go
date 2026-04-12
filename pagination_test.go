@@ -79,7 +79,7 @@ func TestListMonitorsPage_RespectsExplicitOptions(t *testing.T) {
 		})
 	})
 
-	_, _, err := c.ListMonitorsPage(t.Context(), ListOptions{Page: 2, PerPage: 25})
+	_, _, err := c.ListMonitorsWithOptions(t.Context(), ListOptions{Page: 2, PerPage: 25})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestListMonitorsPage_ForwardsFiltersToServer(t *testing.T) {
 		})
 	})
 
-	_, _, err := c.ListMonitorsPage(t.Context(), ListOptions{
+	_, _, err := c.ListMonitorsWithOptions(t.Context(), ListOptions{
 		Filters: map[string]string{"status": "down", "type": "http"},
 	})
 	if err != nil {
@@ -178,7 +178,6 @@ func TestListMonitors_FollowsNextCursorWhenProvided(t *testing.T) {
 					"page":        1,
 					"per_page":    100,
 					"next_cursor": "cur_page_2",
-					"has_more":    true,
 				},
 			})
 		case 2:
@@ -192,7 +191,6 @@ func TestListMonitors_FollowsNextCursorWhenProvided(t *testing.T) {
 					"page":        0,
 					"per_page":    100,
 					"next_cursor": "",
-					"has_more":    false,
 				},
 			})
 		default:
