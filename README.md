@@ -78,7 +78,7 @@ client := spork.NewClient(
 
 **Status Pages** — `CreateStatusPage` · `ListStatusPages` · `GetStatusPage` · `UpdateStatusPage` · `DeleteStatusPage` · `SetCustomDomain` · `RemoveCustomDomain`
 
-**Incidents** — `CreateIncident` · `ListIncidents` · `GetIncident` · `UpdateIncident` · `DeleteIncident` · `CreateIncidentUpdate` · `ListIncidentUpdates`
+**Incidents** — `CreateIncident` · `ListIncidents` · `ListRecentIncidents` · `GetIncident` · `UpdateIncident` · `DeleteIncident` · `CreateIncidentUpdate` · `ListIncidentUpdates`
 
 **API Keys** — `CreateAPIKey` · `ListAPIKeys` · `DeleteAPIKey`
 

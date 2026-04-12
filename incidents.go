@@ -2,6 +2,7 @@ package spork
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 )
 
@@ -46,6 +47,21 @@ func (c *Client) UpdateIncident(ctx context.Context, id string, inc *Incident) (
 // DeleteIncident deletes an incident by ID.
 func (c *Client) DeleteIncident(ctx context.Context, id string) error {
 	return c.doNoContent(ctx, "DELETE", "/incidents/"+url.PathEscape(id), nil)
+}
+
+// ListRecentIncidents returns recent incidents across every status page in the
+// caller's organization, newest-first. Pass limit <= 0 for the server-side
+// default (50). The server caps limit at 100.
+func (c *Client) ListRecentIncidents(ctx context.Context, limit int) ([]Incident, error) {
+	var result []Incident
+	path := "/incidents"
+	if limit > 0 {
+		path = fmt.Sprintf("%s?limit=%d", path, limit)
+	}
+	if err := c.doList(ctx, "GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // CreateIncidentUpdate adds a timeline update to an incident.

@@ -384,6 +384,52 @@ func TestCreateIncident(t *testing.T) {
 	}
 }
 
+func TestListRecentIncidents(t *testing.T) {
+	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/incidents" {
+			t.Errorf("path = %s, want /incidents", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("limit"); got != "25" {
+			t.Errorf("limit = %q, want 25", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": []Incident{
+				{ID: "inc_2", Title: "Newer"},
+				{ID: "inc_1", Title: "Older"},
+			},
+		})
+	})
+
+	incs, err := client.ListRecentIncidents(context.Background(), 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(incs) != 2 {
+		t.Fatalf("expected 2 incidents, got %d", len(incs))
+	}
+	if incs[0].ID != "inc_2" {
+		t.Errorf("ID[0] = %q, want inc_2", incs[0].ID)
+	}
+}
+
+func TestListRecentIncidents_OmitsLimitWhenZero(t *testing.T) {
+	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected no query string when limit <= 0, got %q", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"data": []Incident{}})
+	})
+
+	if _, err := client.ListRecentIncidents(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCreateAPIKey(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || r.URL.Path != "/api-keys" {
