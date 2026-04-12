@@ -152,6 +152,66 @@ func TestListMonitorsPage_ForwardsFiltersToServer(t *testing.T) {
 	}
 }
 
+func TestListMonitors_FollowsNextCursorWhenProvided(t *testing.T) {
+	// Locks in the P0-3 iterator change: when the server hands us an
+	// opaque next_cursor, the auto-paginator must pass it back verbatim
+	// on the next request rather than incrementing a page counter.
+	//
+	// Two-page fake: first response carries NextCursor="cur_2" and
+	// Page=1 is deliberately misleading (imagine a cursor-native
+	// endpoint that does not track page numbers). If the SDK were
+	// ignoring NextCursor, page-arithmetic would terminate the loop or
+	// re-request page 1 forever.
+	calls := 0
+	c, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		q := r.URL.Query()
+		switch calls {
+		case 1:
+			if q.Get("cursor") != "" {
+				t.Errorf("first call should not carry a cursor, got %q", q.Get("cursor"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []Monitor{{ID: "mon_1"}},
+				"meta": map[string]any{
+					"total":       0, // cursor-native server — total not reported
+					"page":        1,
+					"per_page":    100,
+					"next_cursor": "cur_page_2",
+					"has_more":    true,
+				},
+			})
+		case 2:
+			if q.Get("cursor") != "cur_page_2" {
+				t.Errorf("second call must carry the cursor the server returned, got %q", q.Get("cursor"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []Monitor{{ID: "mon_2"}},
+				"meta": map[string]any{
+					"total":       0,
+					"page":        0,
+					"per_page":    100,
+					"next_cursor": "",
+					"has_more":    false,
+				},
+			})
+		default:
+			t.Fatalf("unexpected extra call %d", calls)
+		}
+	})
+
+	monitors, err := c.ListMonitors(t.Context())
+	if err != nil {
+		t.Fatalf("ListMonitors: %v", err)
+	}
+	if len(monitors) != 2 || monitors[0].ID != "mon_1" || monitors[1].ID != "mon_2" {
+		t.Fatalf("expected [mon_1, mon_2], got %+v", monitors)
+	}
+	if calls != 2 {
+		t.Errorf("expected exactly 2 HTTP calls, got %d", calls)
+	}
+}
+
 func TestPageMeta_HasMore(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -164,6 +224,9 @@ func TestPageMeta_HasMore(t *testing.T) {
 		{"partial last page", PageMeta{Total: 150, Page: 2, PerPage: 100}, 50, false},
 		{"zero total falls back to short-page heuristic", PageMeta{PerPage: 100}, 100, true},
 		{"zero total with short page", PageMeta{PerPage: 100}, 42, false},
+		// Cursor-native paths: NextCursor trumps everything else.
+		{"cursor present trumps short-page heuristic", PageMeta{NextCursor: "cur_xyz", PerPage: 100}, 42, true},
+		{"cursor empty + short page = done", PageMeta{NextCursor: "", PerPage: 100}, 50, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
