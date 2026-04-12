@@ -6,6 +6,48 @@ import (
 	"time"
 )
 
+// TestSign_KnownVector is the **cross-repo contract test** for the v1
+// webhook signing scheme.
+//
+// The exact HMAC-SHA256 output below is duplicated in the bemi backend
+// at spork/ping/backend/internal/webhook/signer_test.go under
+// TestSign_EmitsStripeStyleHeader_KnownVector. If either implementation
+// drifts — a formatter change, a byte-order mistake, a different
+// separator — this test and its bemi twin diverge. Both repos checking
+// in the same hex value means either test failing catches the drift
+// immediately, which is what makes VerifyWebhook's guarantee actually
+// enforceable.
+//
+// Input pinned: secret="whsec_test", body={"event":"monitor.down","id":"mon_123"},
+// timestamp=1712937600 (2024-04-12 15:20:00 UTC).
+// Expected HMAC-SHA256 output over "1712937600.<body>".
+func TestSign_KnownVector(t *testing.T) {
+	const (
+		secret        = "whsec_test"
+		body          = `{"event":"monitor.down","id":"mon_123"}`
+		timestamp     = int64(1_712_937_600)
+		expectedHex   = "303603f6e23fa01d80e9a8f20f963ac60d6b9ed90a2fdfc67cbb27e52d7b23b1"
+		expectedValue = "t=1712937600,v1=" + expectedHex
+	)
+
+	got := SignWebhookPayload([]byte(body), timestamp, secret)
+	if got != expectedValue {
+		t.Errorf("contract vector mismatch.\n  got:  %s\n  want: %s\n"+
+			"\nIf this test fails, the webhook signing scheme changed — "+
+			"update bemi's TestSign_EmitsStripeStyleHeader_KnownVector to match "+
+			"and bump the v1 scheme identifier on both sides.", got, expectedValue)
+	}
+
+	// Round-trip: the SDK's VerifyWebhook must accept what our own
+	// Sign produced. If the parse path drifts from the emit path
+	// (different separators, case, etc.) this catches it locally even
+	// before the bemi contract check runs.
+	if err := VerifyWebhook([]byte(body), got, secret,
+		withNow(func() time.Time { return time.Unix(timestamp, 0) })); err != nil {
+		t.Errorf("SDK verifier rejected its own signature: %v", err)
+	}
+}
+
 func TestVerifyWebhook_RoundTrip(t *testing.T) {
 	secret := "whsec_test"
 	payload := []byte(`{"event":"monitor.down","id":"mon_123"}`)
