@@ -89,6 +89,69 @@ func TestListMonitorsPage_RespectsExplicitOptions(t *testing.T) {
 	}
 }
 
+func TestListOptions_FiltersAppearInQueryString(t *testing.T) {
+	// Locks in the contract for server-side filtering: the keys are
+	// emitted in sorted order, URL-encoded, and empty-string values are
+	// dropped so callers can pass a partial-filter map without emitting
+	// no-op parameters.
+	opts := ListOptions{
+		Page:    2,
+		PerPage: 25,
+		Filters: map[string]string{
+			"type":   "http",
+			"status": "down",
+			"tag":    "",                 // dropped
+			"q":      "error code 500&6", // requires URL-encoding
+		},
+	}
+	got := opts.query()
+	// Expected ordering: pagination first, then filters in alphabetical key
+	// order (q, status, type — tag is dropped).
+	want := "page=2&per_page=25&q=error+code+500%266&status=down&type=http"
+	if got != want {
+		t.Errorf("query() = %q, want %q", got, want)
+	}
+}
+
+func TestListOptions_Next_PreservesFilters(t *testing.T) {
+	// Locks in the regression that auto-pagination must not silently drop
+	// filters on page 2 and beyond — otherwise ListMonitors({Filters: {...}})
+	// would return page 1 filtered and every subsequent page unfiltered.
+	opts := ListOptions{
+		Page:    1,
+		PerPage: 100,
+		Filters: map[string]string{"status": "down"},
+	}
+	next := opts.next(PageMeta{Page: 1, PerPage: 100, Total: 250})
+	if next.Page != 2 || next.PerPage != 100 {
+		t.Errorf("next() lost pagination: %+v", next)
+	}
+	if next.Filters["status"] != "down" {
+		t.Errorf("next() dropped filters: %+v", next.Filters)
+	}
+}
+
+func TestListMonitorsPage_ForwardsFiltersToServer(t *testing.T) {
+	var gotQuery url.Values
+	c, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []Monitor{},
+			"meta": map[string]int{"total": 0, "page": 1, "per_page": 100},
+		})
+	})
+
+	_, _, err := c.ListMonitorsPage(t.Context(), ListOptions{
+		Filters: map[string]string{"status": "down", "type": "http"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery.Get("status") != "down" || gotQuery.Get("type") != "http" {
+		t.Errorf("server did not receive filter params: %v", gotQuery)
+	}
+}
+
 func TestPageMeta_HasMore(t *testing.T) {
 	tests := []struct {
 		name     string
