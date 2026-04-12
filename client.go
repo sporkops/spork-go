@@ -280,9 +280,10 @@ func (c *Client) doList(ctx context.Context, method, path string, body any, resu
 		}
 	}
 	return PageMeta{
-		Total:   envelope.Meta.Total,
-		Page:    envelope.Meta.Page,
-		PerPage: envelope.Meta.PerPage,
+		Total:      envelope.Meta.Total,
+		Page:       envelope.Meta.Page,
+		PerPage:    envelope.Meta.PerPage,
+		NextCursor: envelope.Meta.NextCursor,
 	}, nil
 }
 
@@ -408,12 +409,16 @@ type dataEnvelope struct {
 	Data json.RawMessage `json:"data"`
 }
 
-// listEnvelope wraps the standard API list response: {"data": [...], "meta": {...}}
+// listEnvelope wraps the standard API list response: {"data": [...], "meta": {...}}.
+// The meta fields cover both legacy page-based pagination (Total, Page,
+// PerPage) and the cursor-based convention (NextCursor); the server
+// populates whichever are meaningful for that endpoint.
 type listEnvelope struct {
 	Data json.RawMessage `json:"data"`
 	Meta struct {
-		Total   int `json:"total"`
-		Page    int `json:"page"`
-		PerPage int `json:"per_page"`
+		Total      int    `json:"total"`
+		Page       int    `json:"page"`
+		PerPage    int    `json:"per_page"`
+		NextCursor string `json:"next_cursor"`
 	} `json:"meta"`
 }
