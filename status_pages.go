@@ -14,13 +14,24 @@ func (c *Client) CreateStatusPage(ctx context.Context, sp *StatusPage) (*StatusP
 	return &result, nil
 }
 
-// ListStatusPages returns all status pages for the authenticated user.
+// ListStatusPages returns every status page for the authenticated organization,
+// transparently paginating through all pages.
 func (c *Client) ListStatusPages(ctx context.Context) ([]StatusPage, error) {
+	return collectAll[StatusPage](func(opts ListOptions) ([]StatusPage, PageMeta, error) {
+		return c.ListStatusPagesPage(ctx, opts)
+	})
+}
+
+// ListStatusPagesPage returns a single page of status pages along with
+// pagination metadata. Use ListStatusPages if you want every record.
+func (c *Client) ListStatusPagesPage(ctx context.Context, opts ListOptions) ([]StatusPage, PageMeta, error) {
 	var result []StatusPage
-	if err := c.doList(ctx, "GET", "/status-pages?per_page=100", nil, &result); err != nil {
-		return nil, err
+	path := "/status-pages?" + opts.query()
+	meta, err := c.doList(ctx, "GET", path, nil, &result)
+	if err != nil {
+		return nil, PageMeta{}, err
 	}
-	return result, nil
+	return result, meta, nil
 }
 
 // GetStatusPage returns a single status page by ID.

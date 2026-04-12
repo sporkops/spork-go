@@ -15,13 +15,27 @@ func (c *Client) CreateMonitor(ctx context.Context, m *Monitor) (*Monitor, error
 	return &result, nil
 }
 
-// ListMonitors returns all monitors for the authenticated user.
+// ListMonitors returns every monitor for the authenticated organization,
+// transparently paginating through all pages.
+//
+// Prior to v0.4.0 this method silently returned only the first 100 monitors.
+// If you need explicit page control (e.g., for a UI), use ListMonitorsPage.
 func (c *Client) ListMonitors(ctx context.Context) ([]Monitor, error) {
+	return collectAll[Monitor](func(opts ListOptions) ([]Monitor, PageMeta, error) {
+		return c.ListMonitorsPage(ctx, opts)
+	})
+}
+
+// ListMonitorsPage returns a single page of monitors along with pagination
+// metadata. Use ListMonitors if you want every record.
+func (c *Client) ListMonitorsPage(ctx context.Context, opts ListOptions) ([]Monitor, PageMeta, error) {
 	var result []Monitor
-	if err := c.doList(ctx, "GET", "/monitors?per_page=100", nil, &result); err != nil {
-		return nil, err
+	path := "/monitors?" + opts.query()
+	meta, err := c.doList(ctx, "GET", path, nil, &result)
+	if err != nil {
+		return nil, PageMeta{}, err
 	}
-	return result, nil
+	return result, meta, nil
 }
 
 // GetMonitor returns a single monitor by ID.
@@ -51,7 +65,7 @@ func (c *Client) DeleteMonitor(ctx context.Context, id string) error {
 func (c *Client) GetMonitorResults(ctx context.Context, id string, limit int) ([]MonitorResult, error) {
 	path := fmt.Sprintf("/monitors/%s/results?per_page=%d", url.PathEscape(id), limit)
 	var result []MonitorResult
-	if err := c.doList(ctx, "GET", path, nil, &result); err != nil {
+	if _, err := c.doList(ctx, "GET", path, nil, &result); err != nil {
 		return nil, err
 	}
 	return result, nil

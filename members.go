@@ -5,13 +5,24 @@ import (
 	"net/url"
 )
 
-// ListMembers returns all members of the organization.
+// ListMembers returns every member of the organization, transparently
+// paginating through all pages.
 func (c *Client) ListMembers(ctx context.Context) ([]Member, error) {
+	return collectAll[Member](func(opts ListOptions) ([]Member, PageMeta, error) {
+		return c.ListMembersPage(ctx, opts)
+	})
+}
+
+// ListMembersPage returns a single page of members along with pagination
+// metadata. Use ListMembers if you want every record.
+func (c *Client) ListMembersPage(ctx context.Context, opts ListOptions) ([]Member, PageMeta, error) {
 	var result []Member
-	if err := c.doList(ctx, "GET", "/members?per_page=100", nil, &result); err != nil {
-		return nil, err
+	path := "/members?" + opts.query()
+	meta, err := c.doList(ctx, "GET", path, nil, &result)
+	if err != nil {
+		return nil, PageMeta{}, err
 	}
-	return result, nil
+	return result, meta, nil
 }
 
 // InviteMember invites a user to the organization by email.
