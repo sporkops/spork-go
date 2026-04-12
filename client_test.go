@@ -3,9 +3,10 @@ package spork
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -200,6 +201,48 @@ func TestAPIError_Unauthorized(t *testing.T) {
 		if apiErr.RequestID != "req_abc123" {
 			t.Errorf("RequestID = %q, want req_abc123", apiErr.RequestID)
 		}
+	}
+}
+
+func TestAPIError_ValidationDetails(t *testing.T) {
+	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "req_xyz")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"code":    "validation_error",
+				"message": "validation failed",
+				"details": []map[string]string{
+					{"field": "target", "message": "must not include a URL scheme — use a bare hostname"},
+					{"field": "interval", "message": "must be between 60 and 86400"},
+				},
+			},
+		})
+	})
+
+	_, err := client.CreateMonitor(context.Background(), &Monitor{Name: "x", Target: "https://x", Type: "dns"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	apiErr, ok := asAPIError(err)
+	if !ok {
+		t.Fatalf("expected APIError, got %T: %v", err, err)
+	}
+	if len(apiErr.Details) != 2 {
+		t.Fatalf("Details len = %d, want 2", len(apiErr.Details))
+	}
+	if apiErr.Details[0].Field != "target" {
+		t.Errorf("Details[0].Field = %q, want target", apiErr.Details[0].Field)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "target:") {
+		t.Errorf("error message missing field detail: %s", msg)
+	}
+	if !strings.Contains(msg, "bare hostname") {
+		t.Errorf("error message missing validation message: %s", msg)
+	}
+	if !strings.Contains(msg, "req_xyz") {
+		t.Errorf("error message missing request_id: %s", msg)
 	}
 }
 
