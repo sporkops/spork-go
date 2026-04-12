@@ -18,13 +18,13 @@ func (c *Client) CreateStatusPage(ctx context.Context, sp *StatusPage) (*StatusP
 // transparently paginating through all pages.
 func (c *Client) ListStatusPages(ctx context.Context) ([]StatusPage, error) {
 	return collectAll[StatusPage](func(opts ListOptions) ([]StatusPage, PageMeta, error) {
-		return c.ListStatusPagesPage(ctx, opts)
+		return c.ListStatusPagesWithOptions(ctx, opts)
 	})
 }
 
-// ListStatusPagesPage returns a single page of status pages along with
+// ListStatusPagesWithOptions returns a single page of status pages along with
 // pagination metadata. Use ListStatusPages if you want every record.
-func (c *Client) ListStatusPagesPage(ctx context.Context, opts ListOptions) ([]StatusPage, PageMeta, error) {
+func (c *Client) ListStatusPagesWithOptions(ctx context.Context, opts ListOptions) ([]StatusPage, PageMeta, error) {
 	var result []StatusPage
 	path := "/status-pages?" + opts.query()
 	meta, err := c.doList(ctx, "GET", path, nil, &result)

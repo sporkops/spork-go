@@ -9,13 +9,13 @@ import (
 // paginating through all pages.
 func (c *Client) ListMembers(ctx context.Context) ([]Member, error) {
 	return collectAll[Member](func(opts ListOptions) ([]Member, PageMeta, error) {
-		return c.ListMembersPage(ctx, opts)
+		return c.ListMembersWithOptions(ctx, opts)
 	})
 }
 
-// ListMembersPage returns a single page of members along with pagination
+// ListMembersWithOptions returns a single page of members along with pagination
 // metadata. Use ListMembers if you want every record.
-func (c *Client) ListMembersPage(ctx context.Context, opts ListOptions) ([]Member, PageMeta, error) {
+func (c *Client) ListMembersWithOptions(ctx context.Context, opts ListOptions) ([]Member, PageMeta, error) {
 	var result []Member
 	path := "/members?" + opts.query()
 	meta, err := c.doList(ctx, "GET", path, nil, &result)
