@@ -68,8 +68,6 @@ const (
 	DefaultBaseURL = "https://api.sporkops.com/v1"
 
 	defaultTimeout  = 30 * time.Second
-	maxRetries      = 3
-	baseDelay       = 500 * time.Millisecond
 	maxRetryAfter   = 60
 	maxResponseBody = 10 * 1024 * 1024 // 10 MB
 )
@@ -77,12 +75,53 @@ const (
 // Version is the SDK version, used in the User-Agent header.
 var Version = "0.4.0"
 
+// DefaultRetryPolicy is the retry policy used when WithRetryPolicy is not set.
+// It performs up to 3 attempts with exponential backoff starting at 500ms,
+// retrying only on HTTP 429, 503, and 504 responses.
+var DefaultRetryPolicy = RetryPolicy{
+	MaxRetries: 3,
+	BaseDelay:  500 * time.Millisecond,
+	RetryOn:    []int{http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusGatewayTimeout},
+}
+
+// RetryPolicy controls how the SDK retries transient HTTP errors.
+type RetryPolicy struct {
+	// MaxRetries is the maximum number of retry attempts after the initial
+	// request. Zero disables retries.
+	MaxRetries int
+	// BaseDelay is the initial backoff. Each subsequent retry doubles.
+	BaseDelay time.Duration
+	// RetryOn is the set of HTTP status codes considered retryable. If empty,
+	// no retries are performed regardless of MaxRetries.
+	RetryOn []int
+}
+
+func (p RetryPolicy) shouldRetry(status int) bool {
+	for _, s := range p.RetryOn {
+		if s == status {
+			return true
+		}
+	}
+	return false
+}
+
+// HTTPMiddleware wraps an http.RoundTripper. Middleware is composed in the
+// order it was registered: the first middleware registered is the outermost,
+// so its Do method sees the request before any other middleware and the
+// response after all of them. This is the standard onion model used by
+// net/http, AWS SDK v2, and most Go middleware libraries.
+type HTTPMiddleware func(http.RoundTripper) http.RoundTripper
+
 // Client is an HTTP client for the Spork API.
 type Client struct {
-	baseURL    string
-	token      string
-	httpClient *http.Client
-	userAgent  string
+	baseURL     string
+	token       string
+	httpClient  *http.Client
+	userAgent   string
+	retryPolicy RetryPolicy
+	logger      Logger
+	rateLimit   rateLimitStore
+	middleware  []HTTPMiddleware
 }
 
 // Option configures a Client.
@@ -108,11 +147,43 @@ func WithUserAgent(ua string) Option {
 	return func(c *Client) { c.userAgent = ua }
 }
 
+// WithRetryPolicy overrides the default retry policy. Callers who want to
+// disable retries entirely can pass RetryPolicy{}.
+func WithRetryPolicy(p RetryPolicy) Option {
+	return func(c *Client) { c.retryPolicy = p }
+}
+
+// WithLogger installs a Logger that will receive internal SDK events
+// (retries, rate-limit sleeps, auto-pagination). Nil is treated as "no
+// logging" (the default). See the Logger type for conventions.
+func WithLogger(l Logger) Option {
+	return func(c *Client) {
+		if l == nil {
+			l = nopLogger{}
+		}
+		c.logger = l
+	}
+}
+
+// WithHTTPMiddleware installs a transport-level middleware. Middleware are
+// applied in registration order (the first registered is outermost). Use
+// this to add request/response logging, distributed tracing, custom auth,
+// or fault injection without touching the rest of the SDK.
+func WithHTTPMiddleware(mw HTTPMiddleware) Option {
+	return func(c *Client) {
+		if mw != nil {
+			c.middleware = append(c.middleware, mw)
+		}
+	}
+}
+
 // NewClient creates a new Spork API client.
 func NewClient(opts ...Option) *Client {
 	c := &Client{
-		baseURL:   DefaultBaseURL,
-		userAgent: "spork-go-sdk/" + Version,
+		baseURL:     DefaultBaseURL,
+		userAgent:   "spork-go-sdk/" + Version,
+		retryPolicy: DefaultRetryPolicy,
+		logger:      nopLogger{},
 	}
 	for _, o := range opts {
 		o(c)
@@ -132,7 +203,32 @@ func NewClient(opts ...Option) *Client {
 			},
 		}
 	}
+	// Wrap the http.Client's transport with any registered middleware. We
+	// install the stack once at construction; Middleware added after this
+	// is ignored (Option is one-shot by design).
+	if len(c.middleware) > 0 {
+		base := c.httpClient.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		for i := len(c.middleware) - 1; i >= 0; i-- {
+			base = c.middleware[i](base)
+		}
+		c.httpClient = &http.Client{
+			Timeout:       c.httpClient.Timeout,
+			Transport:     base,
+			CheckRedirect: c.httpClient.CheckRedirect,
+		}
+	}
 	return c
+}
+
+// LastRateLimit returns the most recent rate-limit snapshot observed from
+// the server, along with an ok flag that is false if no rate-limit headers
+// have been seen yet. The snapshot is updated atomically after every HTTP
+// response, including retry attempts and error responses.
+func (c *Client) LastRateLimit() (RateLimit, bool) {
+	return c.rateLimit.load()
 }
 
 // Token returns the configured API key/token. This is useful when the CLI
@@ -164,22 +260,30 @@ func (c *Client) doSingle(ctx context.Context, method, path string, body, result
 	return nil
 }
 
-// doList performs a request and unwraps a list {data: [...], "meta": {...}} envelope.
-func (c *Client) doList(ctx context.Context, method, path string, body any, result any) error {
+// doList performs a request and unwraps a list {data: [...], "meta": {...}} envelope,
+// returning the pagination metadata alongside the deserialised data so callers
+// (typically auto-paginators) can decide whether to fetch another page.
+func (c *Client) doList(ctx context.Context, method, path string, body any, result any) (PageMeta, error) {
 	respBody, _, err := c.rawRequest(ctx, method, path, body)
 	if err != nil {
-		return err
+		return PageMeta{}, err
 	}
-	if result != nil && len(respBody) > 0 {
-		var envelope listEnvelope
+	var envelope listEnvelope
+	if len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, &envelope); err != nil {
-			return fmt.Errorf("parsing response envelope: %w", err)
+			return PageMeta{}, fmt.Errorf("parsing response envelope: %w", err)
 		}
-		if err := json.Unmarshal(envelope.Data, result); err != nil {
-			return fmt.Errorf("parsing response data: %w", err)
+		if result != nil && len(envelope.Data) > 0 {
+			if err := json.Unmarshal(envelope.Data, result); err != nil {
+				return PageMeta{}, fmt.Errorf("parsing response data: %w", err)
+			}
 		}
 	}
-	return nil
+	return PageMeta{
+		Total:   envelope.Meta.Total,
+		Page:    envelope.Meta.Page,
+		PerPage: envelope.Meta.PerPage,
+	}, nil
 }
 
 // doNoContent performs a request expecting no response body (e.g., DELETE -> 204).
@@ -189,6 +293,9 @@ func (c *Client) doNoContent(ctx context.Context, method, path string, body any)
 }
 
 // rawRequest performs the HTTP request with retry logic for transient errors.
+// It obeys the configured RetryPolicy, surfaces Idempotency-Key values read
+// from ctx via WithIdempotencyKey, records rate-limit state after every
+// response, and delegates logging to the configured Logger.
 func (c *Client) rawRequest(ctx context.Context, method, path string, body any) ([]byte, http.Header, error) {
 	var jsonBytes []byte
 	if body != nil {
@@ -200,11 +307,14 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any) 
 	}
 
 	reqURL := c.baseURL + path
+	idemKey := IdempotencyKeyFromContext(ctx)
+	policy := c.retryPolicy
 
 	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= policy.MaxRetries; attempt++ {
 		if attempt > 0 {
-			delay := time.Duration(math.Pow(2, float64(attempt-1))) * baseDelay
+			delay := time.Duration(math.Pow(2, float64(attempt-1))) * policy.BaseDelay
+			c.logger.Debug("retry %d after %s", attempt, delay)
 			select {
 			case <-ctx.Done():
 				return nil, nil, ctx.Err()
@@ -226,10 +336,14 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any) 
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
+		if idemKey != "" {
+			req.Header.Set("Idempotency-Key", idemKey)
+		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("request failed: %w", err)
+			c.logger.Debug("request error on attempt %d: %v", attempt, err)
 			continue
 		}
 
@@ -241,16 +355,21 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any) 
 			continue
 		}
 
-		// Retry on transient errors
-		if resp.StatusCode == http.StatusTooManyRequests ||
-			resp.StatusCode == http.StatusServiceUnavailable ||
-			resp.StatusCode == http.StatusGatewayTimeout {
+		// Record rate-limit state before deciding what to do with the
+		// response, so that LastRateLimit() reflects the most recent
+		// server-side counter even on error responses.
+		c.rateLimit.store(parseRateLimit(resp.Header))
+
+		if policy.shouldRetry(resp.StatusCode) && attempt < policy.MaxRetries {
+			// Honor server-specified Retry-After before sleeping on the next
+			// loop iteration's exponential backoff.
 			if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
 				if seconds, parseErr := strconv.Atoi(retryAfter); parseErr == nil {
 					if seconds > maxRetryAfter {
 						seconds = maxRetryAfter
 					}
 					if seconds > 0 {
+						c.logger.Info("server returned %d; honoring Retry-After=%ds", resp.StatusCode, seconds)
 						select {
 						case <-ctx.Done():
 							return nil, nil, ctx.Err()
@@ -258,6 +377,8 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any) 
 						}
 					}
 				}
+			} else {
+				c.logger.Info("retrying after %d response", resp.StatusCode)
 			}
 			lastErr = &APIError{
 				StatusCode: resp.StatusCode,
@@ -279,7 +400,7 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any) 
 		return respBody, resp.Header, nil
 	}
 
-	return nil, nil, fmt.Errorf("request failed after %d retries: %w", maxRetries, lastErr)
+	return nil, nil, fmt.Errorf("request failed after %d retries: %w", policy.MaxRetries, lastErr)
 }
 
 // dataEnvelope wraps the standard API response: {"data": ...}

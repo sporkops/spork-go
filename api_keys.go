@@ -20,13 +20,24 @@ func (c *Client) CreateAPIKey(ctx context.Context, input *CreateAPIKeyInput) (*A
 	return &result, nil
 }
 
-// ListAPIKeys returns all API keys for the authenticated user.
+// ListAPIKeys returns every API key for the authenticated organization,
+// transparently paginating through all pages.
 func (c *Client) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
+	return collectAll[APIKey](func(opts ListOptions) ([]APIKey, PageMeta, error) {
+		return c.ListAPIKeysPage(ctx, opts)
+	})
+}
+
+// ListAPIKeysPage returns a single page of API keys along with pagination
+// metadata. Use ListAPIKeys if you want every record.
+func (c *Client) ListAPIKeysPage(ctx context.Context, opts ListOptions) ([]APIKey, PageMeta, error) {
 	var result []APIKey
-	if err := c.doList(ctx, "GET", "/api-keys?per_page=100", nil, &result); err != nil {
-		return nil, err
+	path := "/api-keys?" + opts.query()
+	meta, err := c.doList(ctx, "GET", path, nil, &result)
+	if err != nil {
+		return nil, PageMeta{}, err
 	}
-	return result, nil
+	return result, meta, nil
 }
 
 // DeleteAPIKey deletes an API key by ID.

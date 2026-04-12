@@ -14,13 +14,24 @@ func (c *Client) CreateAlertChannel(ctx context.Context, ch *AlertChannel) (*Ale
 	return &result, nil
 }
 
-// ListAlertChannels returns all alert channels for the authenticated user.
+// ListAlertChannels returns every alert channel for the authenticated
+// organization, transparently paginating through all pages.
 func (c *Client) ListAlertChannels(ctx context.Context) ([]AlertChannel, error) {
+	return collectAll[AlertChannel](func(opts ListOptions) ([]AlertChannel, PageMeta, error) {
+		return c.ListAlertChannelsPage(ctx, opts)
+	})
+}
+
+// ListAlertChannelsPage returns a single page of alert channels along with
+// pagination metadata. Use ListAlertChannels if you want every record.
+func (c *Client) ListAlertChannelsPage(ctx context.Context, opts ListOptions) ([]AlertChannel, PageMeta, error) {
 	var result []AlertChannel
-	if err := c.doList(ctx, "GET", "/alert-channels?per_page=100", nil, &result); err != nil {
-		return nil, err
+	path := "/alert-channels?" + opts.query()
+	meta, err := c.doList(ctx, "GET", path, nil, &result)
+	if err != nil {
+		return nil, PageMeta{}, err
 	}
-	return result, nil
+	return result, meta, nil
 }
 
 // GetAlertChannel returns a single alert channel by ID.
