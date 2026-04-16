@@ -44,7 +44,15 @@ func (c *Client) GetStatusPage(ctx context.Context, id string) (*StatusPage, err
 	return &result, nil
 }
 
-// UpdateStatusPage updates a status page by ID (full replace via PUT).
+// UpdateStatusPage updates a status page by ID using HTTP PUT
+// (full replacement). Requires the owner role on the server.
+//
+// Unlike UpdateMonitor (PATCH), this replaces the entire resource —
+// any field omitted from sp is reset to its zero value on the server,
+// and omitted nested components/component_groups are deleted. Callers
+// that want partial-update semantics should fetch the current status
+// page first, apply their changes locally, then pass the merged
+// struct here.
 func (c *Client) UpdateStatusPage(ctx context.Context, id string, sp *StatusPage) (*StatusPage, error) {
 	var result StatusPage
 	if err := c.doSingle(ctx, "PUT", "/status-pages/"+url.PathEscape(id), sp, &result); err != nil {

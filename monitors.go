@@ -48,7 +48,18 @@ func (c *Client) GetMonitor(ctx context.Context, id string) (*Monitor, error) {
 	return &result, nil
 }
 
-// UpdateMonitor partially updates a monitor by ID.
+// UpdateMonitor partially updates a monitor by ID using HTTP PATCH.
+//
+// Only non-zero fields on m are applied; untouched fields retain their
+// server-side values. This differs from UpdateAlertChannel and
+// UpdateStatusPage, which use PUT (full replacement).
+//
+// The API also exposes PUT /monitors/{id} for full replacement, which
+// requires the owner role; PATCH has no such role restriction. This SDK
+// does not currently expose the PUT variant because most callers —
+// Terraform and the CLI — supply every writable field anyway, and the
+// role-restricted semantics are better modelled by the server rejecting
+// the request than by the SDK gating it.
 func (c *Client) UpdateMonitor(ctx context.Context, id string, m *Monitor) (*Monitor, error) {
 	var result Monitor
 	if err := c.doSingle(ctx, "PATCH", "/monitors/"+url.PathEscape(id), m, &result); err != nil {

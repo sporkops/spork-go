@@ -43,7 +43,15 @@ func (c *Client) GetAlertChannel(ctx context.Context, id string) (*AlertChannel,
 	return &result, nil
 }
 
-// UpdateAlertChannel updates an alert channel by ID.
+// UpdateAlertChannel updates an alert channel by ID using HTTP PUT
+// (full replacement).
+//
+// Unlike UpdateMonitor (PATCH), this replaces the entire resource —
+// any field omitted from ch is reset to its zero value on the server.
+// Callers that want partial-update semantics should fetch the current
+// channel first, apply their changes locally, then pass the merged
+// struct here. The CLI's `spork alert-channel update` command follows
+// this pattern.
 func (c *Client) UpdateAlertChannel(ctx context.Context, id string, ch *AlertChannel) (*AlertChannel, error) {
 	var result AlertChannel
 	if err := c.doSingle(ctx, "PUT", "/alert-channels/"+url.PathEscape(id), ch, &result); err != nil {
