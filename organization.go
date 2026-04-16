@@ -3,7 +3,6 @@ package spork
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 )
 
 // GetOrganization returns the authenticated user's organization.
@@ -34,13 +33,16 @@ func (c *Client) ListRegions(ctx context.Context) ([]Region, error) {
 }
 
 // ExportOrganizationData downloads a JSON export of all organization data
-// (GDPR Art. 20 data portability). Requires the owner role. Collections
-// are capped at 1000 items per type.
+// (GDPR Art. 20 data portability). Requires the owner role. Server-side
+// collections are capped at 1000 items per type.
+//
+// The response is the raw export JSON, not the standard {data: ...}
+// envelope, so it is returned as json.RawMessage for the caller to
+// persist or unmarshal into a shape they define.
 func (c *Client) ExportOrganizationData(ctx context.Context) (json.RawMessage, error) {
 	respBody, _, err := c.rawRequest(ctx, "GET", "/organization/export", nil)
 	if err != nil {
-		return nil, fmt.Errorf("exporting organization data: %w", err)
+		return nil, err
 	}
 	return json.RawMessage(respBody), nil
 }
-

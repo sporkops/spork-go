@@ -286,9 +286,11 @@ type Region struct {
 
 // MonitorStats contains 24-hour aggregate statistics for a monitor.
 // Stats are cached server-side for 5 minutes.
+//
+// AvgResponseTimeMs is int64 to match Monitor.AvgResponseTimeMs.
 type MonitorStats struct {
 	UptimePercentage  float64 `json:"uptime_percentage"`    // 0-100
-	AvgResponseTimeMs int     `json:"avg_response_time_ms"` // milliseconds
+	AvgResponseTimeMs int64   `json:"avg_response_time_ms"` // milliseconds
 }
 
 // CustomDomainStatus describes the provisioning and verification state
@@ -357,10 +359,20 @@ type SubscriberCount struct {
 	Count int `json:"count"`
 }
 
-// UpdateComponentInput is the request body for updating a single component.
+// UpdateComponentInput is the request body for updating a single component
+// via PUT /status-pages/{id}/components/{componentId}. Because the endpoint
+// uses PUT (full replacement), omitted fields on the server are reset.
+//
+// The fields below intentionally do NOT use `omitempty` so callers can:
+//   - set Order to 0 (valid first position)
+//   - clear Description by passing ""
+//   - ungroup a component by passing GroupID: "" (per API contract)
+//
+// DisplayName is required by the server; the other fields are preserved
+// at their current value only if the caller round-trips them.
 type UpdateComponentInput struct {
 	DisplayName string `json:"display_name"`
-	Description string `json:"description,omitempty"`
-	GroupID     string `json:"group_id,omitempty"`
-	Order       int    `json:"order,omitempty"`
+	Description string `json:"description"`
+	GroupID     string `json:"group_id"`
+	Order       int    `json:"order"`
 }

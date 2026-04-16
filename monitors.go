@@ -104,9 +104,19 @@ func (c *Client) GetMonitorStats(ctx context.Context, id string) (*MonitorStats,
 	return &result, nil
 }
 
-// ListMonitorAuditTrail returns a chronological log of changes made to a
-// monitor. Pass limit <= 0 for the server-side default (50). The server
-// caps limit at 100. Use the returned next_cursor value to paginate.
+// ListMonitorAuditTrail returns a page of audit trail entries for a monitor.
+//
+// Pagination is cursor-only: pass "" for the first page, and the returned
+// nextCursor for each subsequent page. An empty returned cursor signals
+// the end. Pass limit <= 0 for the server-side default (50); the server
+// caps limit at 100.
+//
+// The signature deviates from the rest of the SDK (which uses
+// ListXWithOptions + PageMeta) because this endpoint's wire envelope
+// is non-standard — next_cursor is at the top level rather than nested
+// under meta — and this method mirrors that shape directly rather than
+// hiding it behind a shim. Callers that want to iterate the full trail
+// can loop until nextCursor == "".
 func (c *Client) ListMonitorAuditTrail(ctx context.Context, id string, limit int, cursor string) ([]AuditTrailEntry, string, error) {
 	path := fmt.Sprintf("/monitors/%s/audit-trail", url.PathEscape(id))
 	sep := "?"
