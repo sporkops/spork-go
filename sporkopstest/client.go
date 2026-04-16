@@ -147,6 +147,10 @@ func (f *FakeServer) route(w http.ResponseWriter, r *http.Request) {
 		f.handleAlertChannels(w, r)
 	case strings.HasPrefix(r.URL.Path, "/status-pages"):
 		f.handleStatusPages(w, r)
+	case r.URL.Path == "/regions" && r.Method == http.MethodGet:
+		f.handleRegions(w, r)
+	case strings.HasPrefix(r.URL.Path, "/delivery-logs"):
+		f.handleDeliveryLogs(w, r)
 	default:
 		http.Error(w, `{"error":{"code":"not_implemented","message":"sporkopstest does not stub this endpoint"}}`, http.StatusNotImplemented)
 	}
@@ -321,6 +325,20 @@ func collectMonitors(m map[string]spork.Monitor) []spork.Monitor {
 	return out
 }
 
+func (f *FakeServer) handleRegions(w http.ResponseWriter, r *http.Request) {
+	regions := []spork.Region{
+		{ID: "us-central1", Name: "US Central (Iowa)"},
+		{ID: "europe-west1", Name: "Europe West (Belgium)"},
+	}
+	writeList(w, regions, r)
+}
+
+func (f *FakeServer) handleDeliveryLogs(w http.ResponseWriter, r *http.Request) {
+	// The fake returns an empty list; callers needing specific logs
+	// should use Handle to inject them.
+	writeList(w, []spork.DeliveryLog{}, r)
+}
+
 func sliceLen(items any) int {
 	switch v := items.(type) {
 	case []spork.Monitor:
@@ -328,6 +346,12 @@ func sliceLen(items any) int {
 	case []spork.AlertChannel:
 		return len(v)
 	case []spork.StatusPage:
+		return len(v)
+	case []spork.Region:
+		return len(v)
+	case []spork.DeliveryLog:
+		return len(v)
+	case []spork.EmailSubscriber:
 		return len(v)
 	default:
 		return 0

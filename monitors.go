@@ -2,6 +2,7 @@ package spork
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 )
@@ -69,4 +70,52 @@ func (c *Client) GetMonitorResults(ctx context.Context, id string, limit int) ([
 		return nil, err
 	}
 	return result, nil
+}
+
+// GetMonitorResult returns a single check result by monitor ID and result ID.
+func (c *Client) GetMonitorResult(ctx context.Context, monitorID, resultID string) (*MonitorResult, error) {
+	var result MonitorResult
+	path := fmt.Sprintf("/monitors/%s/results/%s", url.PathEscape(monitorID), url.PathEscape(resultID))
+	if err := c.doSingle(ctx, "GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetMonitorStats returns 24-hour aggregate statistics for a monitor.
+// The server caches stats for 5 minutes.
+func (c *Client) GetMonitorStats(ctx context.Context, id string) (*MonitorStats, error) {
+	var result MonitorStats
+	path := fmt.Sprintf("/monitors/%s/stats", url.PathEscape(id))
+	if err := c.doSingle(ctx, "GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ListMonitorAuditTrail returns a chronological log of changes made to a
+// monitor. Pass limit <= 0 for the server-side default (50). The server
+// caps limit at 100. Use the returned next_cursor value to paginate.
+func (c *Client) ListMonitorAuditTrail(ctx context.Context, id string, limit int, cursor string) ([]AuditTrailEntry, string, error) {
+	path := fmt.Sprintf("/monitors/%s/audit-trail", url.PathEscape(id))
+	sep := "?"
+	if limit > 0 {
+		path += fmt.Sprintf("%slimit=%d", sep, limit)
+		sep = "&"
+	}
+	if cursor != "" {
+		path += fmt.Sprintf("%scursor=%s", sep, url.QueryEscape(cursor))
+	}
+	respBody, _, err := c.rawRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	var envelope struct {
+		Data       []AuditTrailEntry `json:"data"`
+		NextCursor string            `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		return nil, "", fmt.Errorf("parsing audit trail response: %w", err)
+	}
+	return envelope.Data, envelope.NextCursor, nil
 }
