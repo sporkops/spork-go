@@ -2,6 +2,7 @@ package spork
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 )
@@ -47,7 +48,18 @@ func (c *Client) GetMonitor(ctx context.Context, id string) (*Monitor, error) {
 	return &result, nil
 }
 
-// UpdateMonitor partially updates a monitor by ID.
+// UpdateMonitor partially updates a monitor by ID using HTTP PATCH.
+//
+// Only non-zero fields on m are applied; untouched fields retain their
+// server-side values. This differs from UpdateAlertChannel and
+// UpdateStatusPage, which use PUT (full replacement).
+//
+// The API also exposes PUT /monitors/{id} for full replacement, which
+// requires the owner role; PATCH has no such role restriction. This SDK
+// does not currently expose the PUT variant because most callers —
+// Terraform and the CLI — supply every writable field anyway, and the
+// role-restricted semantics are better modelled by the server rejecting
+// the request than by the SDK gating it.
 func (c *Client) UpdateMonitor(ctx context.Context, id string, m *Monitor) (*Monitor, error) {
 	var result Monitor
 	if err := c.doSingle(ctx, "PATCH", "/monitors/"+url.PathEscape(id), m, &result); err != nil {
@@ -69,4 +81,62 @@ func (c *Client) GetMonitorResults(ctx context.Context, id string, limit int) ([
 		return nil, err
 	}
 	return result, nil
+}
+
+// GetMonitorResult returns a single check result by monitor ID and result ID.
+func (c *Client) GetMonitorResult(ctx context.Context, monitorID, resultID string) (*MonitorResult, error) {
+	var result MonitorResult
+	path := fmt.Sprintf("/monitors/%s/results/%s", url.PathEscape(monitorID), url.PathEscape(resultID))
+	if err := c.doSingle(ctx, "GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetMonitorStats returns 24-hour aggregate statistics for a monitor.
+// The server caches stats for 5 minutes.
+func (c *Client) GetMonitorStats(ctx context.Context, id string) (*MonitorStats, error) {
+	var result MonitorStats
+	path := fmt.Sprintf("/monitors/%s/stats", url.PathEscape(id))
+	if err := c.doSingle(ctx, "GET", path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ListMonitorAuditTrail returns a page of audit trail entries for a monitor.
+//
+// Pagination is cursor-only: pass "" for the first page, and the returned
+// nextCursor for each subsequent page. An empty returned cursor signals
+// the end. Pass limit <= 0 for the server-side default (50); the server
+// caps limit at 100.
+//
+// The signature deviates from the rest of the SDK (which uses
+// ListXWithOptions + PageMeta) because this endpoint's wire envelope
+// is non-standard — next_cursor is at the top level rather than nested
+// under meta — and this method mirrors that shape directly rather than
+// hiding it behind a shim. Callers that want to iterate the full trail
+// can loop until nextCursor == "".
+func (c *Client) ListMonitorAuditTrail(ctx context.Context, id string, limit int, cursor string) ([]AuditTrailEntry, string, error) {
+	path := fmt.Sprintf("/monitors/%s/audit-trail", url.PathEscape(id))
+	sep := "?"
+	if limit > 0 {
+		path += fmt.Sprintf("%slimit=%d", sep, limit)
+		sep = "&"
+	}
+	if cursor != "" {
+		path += fmt.Sprintf("%scursor=%s", sep, url.QueryEscape(cursor))
+	}
+	respBody, _, err := c.rawRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	var envelope struct {
+		Data       []AuditTrailEntry `json:"data"`
+		NextCursor string            `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		return nil, "", fmt.Errorf("parsing audit trail response: %w", err)
+	}
+	return envelope.Data, envelope.NextCursor, nil
 }

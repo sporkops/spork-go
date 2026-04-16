@@ -277,3 +277,102 @@ type IncidentUpdate struct {
 	Message    string `json:"message,omitempty"`
 	CreatedAt  string `json:"created_at,omitempty"`  // read-only
 }
+
+// Region represents an available monitoring region.
+type Region struct {
+	ID   string `json:"id"`   // GCP region identifier, e.g. "us-central1"
+	Name string `json:"name"` // human-readable name, e.g. "US Central (Iowa)"
+}
+
+// MonitorStats contains 24-hour aggregate statistics for a monitor.
+// Stats are cached server-side for 5 minutes.
+//
+// AvgResponseTimeMs is int64 to match Monitor.AvgResponseTimeMs.
+type MonitorStats struct {
+	UptimePercentage  float64 `json:"uptime_percentage"`    // 0-100
+	AvgResponseTimeMs int64   `json:"avg_response_time_ms"` // milliseconds
+}
+
+// CustomDomainStatus describes the provisioning and verification state
+// of a status page's custom domain.
+type CustomDomainStatus struct {
+	Domain      string `json:"domain"`
+	Status      string `json:"status"`       // "pending", "active", or "failed"
+	SSLStatus   string `json:"ssl_status"`
+	DNSVerified bool   `json:"dns_verified"` // whether CNAME points to status.sporkops.com
+	CNAMETarget string `json:"cname_target"` // e.g. "status.sporkops.com"
+	DNSProvider string `json:"dns_provider"`
+}
+
+// AuditTrailEntry represents a single change in a monitor's audit trail.
+type AuditTrailEntry struct {
+	ID         string                       `json:"id"`
+	Timestamp  string                       `json:"timestamp"`
+	ActorEmail string                       `json:"actor_email"`
+	Source     string                       `json:"source"` // "ui", "api", "cli", "terraform"
+	Action     string                       `json:"action"` // "created", "updated", "deleted"
+	Changes    map[string]AuditTrailChange  `json:"changes,omitempty"`
+}
+
+// AuditTrailChange represents the old and new values of a single field change.
+type AuditTrailChange struct {
+	Old any `json:"old"`
+	New any `json:"new"`
+}
+
+// DeliveryLog records a single alert delivery attempt.
+type DeliveryLog struct {
+	ID          string `json:"id"`
+	ChannelID   string `json:"channel_id"`
+	ChannelType string `json:"channel_type"`
+	MonitorID   string `json:"monitor_id"`
+	MonitorName string `json:"monitor_name"`
+	Event       string `json:"event"`    // "monitor.down", "monitor.up", "test"
+	Status      string `json:"status"`   // "success" or "failed"
+	Attempts    int    `json:"attempts"`
+	Error       string `json:"error,omitempty"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// EmailSubscriber represents a status page email subscriber.
+type EmailSubscriber struct {
+	ID           string `json:"id"`
+	StatusPageID string `json:"status_page_id"`
+	Email        string `json:"email"`
+	Confirmed    bool   `json:"confirmed"`
+	CreatedAt    string `json:"created_at"`
+	ConfirmedAt  string `json:"confirmed_at,omitempty"`
+}
+
+// AcceptInviteInput is the request body for accepting an organization invite.
+type AcceptInviteInput struct {
+	Token string `json:"token"`
+}
+
+// AcceptInviteResult is the response after accepting an invite.
+type AcceptInviteResult struct {
+	Status string `json:"status"` // "accepted"
+}
+
+// SubscriberCount is the response for GetSubscriberCount.
+type SubscriberCount struct {
+	Count int `json:"count"`
+}
+
+// UpdateComponentInput is the request body for updating a single component
+// via PUT /status-pages/{id}/components/{componentId}. Because the endpoint
+// uses PUT (full replacement), omitted fields on the server are reset.
+//
+// The fields below intentionally do NOT use `omitempty` so callers can:
+//   - set Order to 0 (valid first position)
+//   - clear Description by passing ""
+//   - ungroup a component by passing GroupID: "" (per API contract)
+//
+// DisplayName is required by the server; the other fields are preserved
+// at their current value only if the caller round-trips them.
+type UpdateComponentInput struct {
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	GroupID     string `json:"group_id"`
+	Order       int    `json:"order"`
+}

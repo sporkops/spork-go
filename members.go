@@ -47,3 +47,24 @@ func (c *Client) TransferOwnership(ctx context.Context, input *TransferOwnership
 	}
 	return &result, nil
 }
+
+// ListPendingInvites returns pending invitations matching the authenticated
+// user's email. Any authenticated user can call this.
+func (c *Client) ListPendingInvites(ctx context.Context) ([]Member, error) {
+	var result []Member
+	if _, err := c.doList(ctx, "GET", "/members/invites", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// AcceptInvite accepts a pending organization invitation. The authenticated
+// user's email must match the invite email. Users can only belong to one
+// organization at a time.
+func (c *Client) AcceptInvite(ctx context.Context, input *AcceptInviteInput) (*AcceptInviteResult, error) {
+	var result AcceptInviteResult
+	if err := c.doSingle(ctx, "POST", "/members/accept", input, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

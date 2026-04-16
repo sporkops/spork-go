@@ -43,7 +43,15 @@ func (c *Client) GetAlertChannel(ctx context.Context, id string) (*AlertChannel,
 	return &result, nil
 }
 
-// UpdateAlertChannel updates an alert channel by ID.
+// UpdateAlertChannel updates an alert channel by ID using HTTP PUT
+// (full replacement).
+//
+// Unlike UpdateMonitor (PATCH), this replaces the entire resource —
+// any field omitted from ch is reset to its zero value on the server.
+// Callers that want partial-update semantics should fetch the current
+// channel first, apply their changes locally, then pass the merged
+// struct here. The CLI's `spork alert-channel update` command follows
+// this pattern.
 func (c *Client) UpdateAlertChannel(ctx context.Context, id string, ch *AlertChannel) (*AlertChannel, error) {
 	var result AlertChannel
 	if err := c.doSingle(ctx, "PUT", "/alert-channels/"+url.PathEscape(id), ch, &result); err != nil {
@@ -60,4 +68,34 @@ func (c *Client) DeleteAlertChannel(ctx context.Context, id string) error {
 // TestAlertChannel sends a test notification to an alert channel.
 func (c *Client) TestAlertChannel(ctx context.Context, id string) error {
 	return c.doNoContent(ctx, "POST", "/alert-channels/"+url.PathEscape(id)+"/test", nil)
+}
+
+// ResendAlertChannelVerification resends the verification email for an
+// unverified email alert channel. Rate limited to 5 per user per 10 minutes.
+func (c *Client) ResendAlertChannelVerification(ctx context.Context, id string) error {
+	return c.doNoContent(ctx, "POST", "/alert-channels/"+url.PathEscape(id)+"/resend-verification", nil)
+}
+
+// ListDeliveryLogs returns alert delivery log entries, transparently
+// paginating through all pages. Pass an empty channelID to list logs
+// across all channels, or a specific channel ID to filter.
+func (c *Client) ListDeliveryLogs(ctx context.Context, channelID string) ([]DeliveryLog, error) {
+	return collectAll[DeliveryLog](func(opts ListOptions) ([]DeliveryLog, PageMeta, error) {
+		return c.ListDeliveryLogsWithOptions(ctx, channelID, opts)
+	})
+}
+
+// ListDeliveryLogsWithOptions returns a single page of delivery logs along
+// with pagination metadata.
+func (c *Client) ListDeliveryLogsWithOptions(ctx context.Context, channelID string, opts ListOptions) ([]DeliveryLog, PageMeta, error) {
+	var result []DeliveryLog
+	path := "/delivery-logs?" + opts.query()
+	if channelID != "" {
+		path += "&channel_id=" + url.QueryEscape(channelID)
+	}
+	meta, err := c.doList(ctx, "GET", path, nil, &result)
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+	return result, meta, nil
 }
