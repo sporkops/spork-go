@@ -73,7 +73,7 @@ const (
 )
 
 // Version is the SDK version, used in the User-Agent header.
-var Version = "0.4.0"
+var Version = "0.5.0"
 
 // DefaultRetryPolicy is the retry policy used when WithRetryPolicy is not set.
 // It performs up to 3 attempts with exponential backoff starting at 500ms,
