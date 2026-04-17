@@ -43,11 +43,12 @@ import (
 type FakeServer struct {
 	server *httptest.Server
 
-	mu       sync.Mutex
-	monitors map[string]spork.Monitor
-	alerts   map[string]spork.AlertChannel
-	pages    map[string]spork.StatusPage
-	counter  atomic.Uint64
+	mu           sync.Mutex
+	monitors     map[string]spork.Monitor
+	alerts       map[string]spork.AlertChannel
+	pages        map[string]spork.StatusPage
+	maintenance  map[string]spork.MaintenanceWindow
+	counter      atomic.Uint64
 
 	// customHandlers lets callers override specific paths for a single test.
 	customHandlers map[string]http.HandlerFunc
@@ -61,6 +62,7 @@ func NewFakeServer() *FakeServer {
 		monitors:       make(map[string]spork.Monitor),
 		alerts:         make(map[string]spork.AlertChannel),
 		pages:          make(map[string]spork.StatusPage),
+		maintenance:    make(map[string]spork.MaintenanceWindow),
 		customHandlers: make(map[string]http.HandlerFunc),
 	}
 	fs.server = httptest.NewServer(http.HandlerFunc(fs.route))
@@ -100,14 +102,16 @@ func (f *FakeServer) Handle(method, path string, h http.HandlerFunc) {
 	f.customHandlers[method+" "+path] = h
 }
 
-// Reset clears all state (monitors, alert channels, status pages) and
-// removes any custom handlers. Useful between subtests.
+// Reset clears all state (monitors, alert channels, status pages,
+// maintenance windows) and removes any custom handlers. Useful between
+// subtests.
 func (f *FakeServer) Reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.monitors = make(map[string]spork.Monitor)
 	f.alerts = make(map[string]spork.AlertChannel)
 	f.pages = make(map[string]spork.StatusPage)
+	f.maintenance = make(map[string]spork.MaintenanceWindow)
 	f.customHandlers = make(map[string]http.HandlerFunc)
 }
 
@@ -118,6 +122,18 @@ func (f *FakeServer) Monitors() map[string]spork.Monitor {
 	defer f.mu.Unlock()
 	out := make(map[string]spork.Monitor, len(f.monitors))
 	for k, v := range f.monitors {
+		out[k] = v
+	}
+	return out
+}
+
+// MaintenanceWindows returns a snapshot of the windows currently stored
+// in the fake, keyed by ID.
+func (f *FakeServer) MaintenanceWindows() map[string]spork.MaintenanceWindow {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]spork.MaintenanceWindow, len(f.maintenance))
+	for k, v := range f.maintenance {
 		out[k] = v
 	}
 	return out
@@ -147,6 +163,8 @@ func (f *FakeServer) route(w http.ResponseWriter, r *http.Request) {
 		f.handleAlertChannels(w, r)
 	case strings.HasPrefix(r.URL.Path, "/status-pages"):
 		f.handleStatusPages(w, r)
+	case strings.HasPrefix(r.URL.Path, "/maintenance-windows"):
+		f.handleMaintenanceWindows(w, r)
 	case r.URL.Path == "/regions" && r.Method == http.MethodGet:
 		f.handleRegions(w, r)
 	case strings.HasPrefix(r.URL.Path, "/delivery-logs"):
@@ -285,6 +303,82 @@ func (f *FakeServer) handleStatusPages(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (f *FakeServer) handleMaintenanceWindows(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/maintenance-windows")
+	rest = strings.Trim(rest, "/")
+
+	// Match /{id}/cancel before treating rest as just an ID.
+	var id, sub string
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		id = rest[:idx]
+		sub = rest[idx+1:]
+	} else {
+		id = rest
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	switch {
+	case r.Method == http.MethodPost && id == "":
+		var mw spork.MaintenanceWindow
+		if err := json.NewDecoder(r.Body).Decode(&mw); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+			return
+		}
+		mw.ID = f.nextID("mw")
+		mw.State = spork.MaintenanceStateScheduled
+		f.maintenance[mw.ID] = mw
+		writeData(w, http.StatusOK, mw)
+	case r.Method == http.MethodGet && id == "":
+		items := make([]spork.MaintenanceWindow, 0, len(f.maintenance))
+		for _, v := range f.maintenance {
+			items = append(items, v)
+		}
+		writeList(w, items, r)
+	case r.Method == http.MethodGet:
+		mw, ok := f.maintenance[id]
+		if !ok {
+			writeErr(w, http.StatusNotFound, "not_found", "maintenance window not found")
+			return
+		}
+		writeData(w, http.StatusOK, mw)
+	case r.Method == http.MethodPatch:
+		mw, ok := f.maintenance[id]
+		if !ok {
+			writeErr(w, http.StatusNotFound, "not_found", "maintenance window not found")
+			return
+		}
+		var patch spork.MaintenanceWindow
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+			return
+		}
+		mergeMaintenanceWindow(&mw, patch)
+		f.maintenance[id] = mw
+		writeData(w, http.StatusOK, mw)
+	case r.Method == http.MethodPost && sub == "cancel":
+		mw, ok := f.maintenance[id]
+		if !ok {
+			writeErr(w, http.StatusNotFound, "not_found", "maintenance window not found")
+			return
+		}
+		mw.State = spork.MaintenanceStateCancelled
+		mw.CancelledAt = time.Now().UTC().Format(time.RFC3339)
+		f.maintenance[id] = mw
+		writeData(w, http.StatusOK, mw)
+	case r.Method == http.MethodDelete:
+		if _, ok := f.maintenance[id]; !ok {
+			writeErr(w, http.StatusNotFound, "not_found", "maintenance window not found")
+			return
+		}
+		delete(f.maintenance, id)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
+	}
+}
+
 func writeData(w http.ResponseWriter, status int, data any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
@@ -353,6 +447,8 @@ func sliceLen(items any) int {
 		return len(v)
 	case []spork.EmailSubscriber:
 		return len(v)
+	case []spork.MaintenanceWindow:
+		return len(v)
 	default:
 		return 0
 	}
@@ -379,5 +475,51 @@ func mergeMonitor(dst *spork.Monitor, patch spork.Monitor) {
 	}
 	if len(patch.Tags) > 0 {
 		dst.Tags = patch.Tags
+	}
+}
+
+// mergeMaintenanceWindow applies the non-zero fields from patch to dst.
+func mergeMaintenanceWindow(dst *spork.MaintenanceWindow, patch spork.MaintenanceWindow) {
+	if patch.Name != "" {
+		dst.Name = patch.Name
+	}
+	if patch.Description != "" {
+		dst.Description = patch.Description
+	}
+	if len(patch.MonitorIDs) > 0 {
+		dst.MonitorIDs = patch.MonitorIDs
+	}
+	if len(patch.TagSelectors) > 0 {
+		dst.TagSelectors = patch.TagSelectors
+	}
+	if patch.AllMonitors != nil {
+		dst.AllMonitors = patch.AllMonitors
+	}
+	if patch.Timezone != "" {
+		dst.Timezone = patch.Timezone
+	}
+	if patch.StartAt != "" {
+		dst.StartAt = patch.StartAt
+	}
+	if patch.EndAt != "" {
+		dst.EndAt = patch.EndAt
+	}
+	if patch.RecurrenceType != "" {
+		dst.RecurrenceType = patch.RecurrenceType
+	}
+	if len(patch.RecurrenceDays) > 0 {
+		dst.RecurrenceDays = patch.RecurrenceDays
+	}
+	if patch.RecurrenceUntil != "" {
+		dst.RecurrenceUntil = patch.RecurrenceUntil
+	}
+	if patch.SuppressAlerts != nil {
+		dst.SuppressAlerts = patch.SuppressAlerts
+	}
+	if patch.ExcludeFromUptime != nil {
+		dst.ExcludeFromUptime = patch.ExcludeFromUptime
+	}
+	if patch.PauseChecks != nil {
+		dst.PauseChecks = patch.PauseChecks
 	}
 }
