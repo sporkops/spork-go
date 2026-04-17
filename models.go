@@ -36,6 +36,13 @@ type Monitor struct {
 	LiveStatus        map[string]RegionStatus   `json:"live_status,omitempty"`         // read-only: per-region live check status
 	CreatedAt         string                    `json:"created_at,omitempty"`          // read-only
 	UpdatedAt         string                    `json:"updated_at,omitempty"`          // read-only
+
+	// ActiveMaintenanceWindowID is read-only: the ID of the maintenance
+	// window currently suppressing this monitor (empty when the monitor
+	// is not inside an active window). The server computes this field
+	// opportunistically on GetMonitor so the UI can show a "Maintenance"
+	// badge without a second request.
+	ActiveMaintenanceWindowID string `json:"active_maintenance_window_id,omitempty"`
 }
 
 // RegionStatus represents the live check status for a specific monitoring region.
@@ -252,21 +259,25 @@ type StatusComponent struct {
 // Type is "incident" or "maintenance". Status progresses through
 // "investigating" -> "identified" -> "monitoring" -> "resolved" for incidents,
 // or "scheduled" -> "in_progress" -> "completed" for maintenance.
+//
+// MaintenanceWindowID is set by the server when the incident was
+// auto-synced from a MaintenanceWindow — clients should not write it.
 type Incident struct {
-	ID             string   `json:"id,omitempty"`
-	StatusPageID   string   `json:"status_page_id,omitempty"` // read-only
-	Title          string   `json:"title"`
-	Message        string   `json:"message,omitempty"`
-	Type           string   `json:"type,omitempty"`           // "incident" or "maintenance"
-	Status         string   `json:"status,omitempty"`         // see type docs above
-	Impact         string   `json:"impact,omitempty"`         // "none", "minor", "major", "critical"
-	ComponentIDs   []string `json:"component_ids,omitempty"`  // affected StatusComponent IDs
-	StartedAt      string   `json:"started_at,omitempty"`
-	ResolvedAt     string   `json:"resolved_at,omitempty"`    // read-only: set when status becomes resolved
-	ScheduledStart string   `json:"scheduled_start,omitempty"` // maintenance only
-	ScheduledEnd   string   `json:"scheduled_end,omitempty"`   // maintenance only
-	CreatedAt      string   `json:"created_at,omitempty"`      // read-only
-	UpdatedAt      string   `json:"updated_at,omitempty"`      // read-only
+	ID                  string   `json:"id,omitempty"`
+	StatusPageID        string   `json:"status_page_id,omitempty"` // read-only
+	Title               string   `json:"title"`
+	Message             string   `json:"message,omitempty"`
+	Type                string   `json:"type,omitempty"`           // "incident" or "maintenance"
+	Status              string   `json:"status,omitempty"`         // see type docs above
+	Impact              string   `json:"impact,omitempty"`         // "none", "minor", "major", "critical"
+	ComponentIDs        []string `json:"component_ids,omitempty"`  // affected StatusComponent IDs
+	StartedAt           string   `json:"started_at,omitempty"`
+	ResolvedAt          string   `json:"resolved_at,omitempty"`    // read-only: set when status becomes resolved
+	ScheduledStart      string   `json:"scheduled_start,omitempty"` // maintenance only
+	ScheduledEnd        string   `json:"scheduled_end,omitempty"`   // maintenance only
+	MaintenanceWindowID string   `json:"maintenance_window_id,omitempty"` // read-only: populated on auto-synced maintenance incidents
+	CreatedAt           string   `json:"created_at,omitempty"`      // read-only
+	UpdatedAt           string   `json:"updated_at,omitempty"`      // read-only
 }
 
 // IncidentUpdate represents a timeline entry on an incident.
@@ -277,6 +288,76 @@ type IncidentUpdate struct {
 	Message    string `json:"message,omitempty"`
 	CreatedAt  string `json:"created_at,omitempty"`  // read-only
 }
+
+// MaintenanceWindow represents a scheduled period during which alerts are
+// suppressed (and optionally checks are paused) for a set of monitors.
+//
+// Targeting: set exactly one of MonitorIDs, TagSelectors, or AllMonitors.
+// Tag selectors match monitors whose Tags intersect the given list
+// (OR semantics, matching UptimeRobot).
+//
+// Scheduling: StartAt and EndAt are RFC3339 UTC timestamps. Timezone is
+// an IANA name (e.g., "America/Los_Angeles") used for DST-aware recurrence
+// expansion and for display.
+//
+// Recurrence: leave RecurrenceType empty for a one-time window. For
+// "weekly", RecurrenceDays is a list of [0..6] (Sunday=0). For "monthly",
+// RecurrenceDays is a list of [1..31].
+//
+// Behavior: SuppressAlerts (default true) gates alert delivery during
+// the window. ExcludeFromUptime (default true) drops checks in the
+// window from uptime-percentage calculations. PauseChecks (default
+// false) skips dispatch entirely — most callers want checks to keep
+// running so data is preserved.
+//
+// Read-only: State, CancelledAt, CreatedBy, CreatedAt, UpdatedAt.
+type MaintenanceWindow struct {
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+
+	// Targeting — set exactly one.
+	MonitorIDs   []string `json:"monitor_ids,omitempty"`
+	TagSelectors []string `json:"tag_selectors,omitempty"`
+	AllMonitors  *bool    `json:"all_monitors,omitempty"`
+
+	// Scheduling
+	Timezone string `json:"timezone,omitempty"` // IANA name, required
+	StartAt  string `json:"start_at,omitempty"` // RFC3339 UTC
+	EndAt    string `json:"end_at,omitempty"`   // RFC3339 UTC
+
+	// Recurrence — empty type means one-time.
+	RecurrenceType  string `json:"recurrence_type,omitempty"`  // "", "daily", "weekly", "monthly"
+	RecurrenceDays  []int  `json:"recurrence_days,omitempty"`  // weekly: 0-6 (Sun-Sat); monthly: 1-31
+	RecurrenceUntil string `json:"recurrence_until,omitempty"` // RFC3339 UTC
+
+	// Behavior
+	SuppressAlerts    *bool `json:"suppress_alerts,omitempty"`     // default true
+	ExcludeFromUptime *bool `json:"exclude_from_uptime,omitempty"` // default true
+	PauseChecks       *bool `json:"pause_checks,omitempty"`        // default false
+
+	// Read-only
+	State       string `json:"state,omitempty"`
+	CancelledAt string `json:"cancelled_at,omitempty"`
+	CreatedBy   string `json:"created_by,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+}
+
+// MaintenanceWindow state values returned by the API.
+const (
+	MaintenanceStateScheduled  = "scheduled"
+	MaintenanceStateInProgress = "in_progress"
+	MaintenanceStateCompleted  = "completed"
+	MaintenanceStateCancelled  = "cancelled"
+)
+
+// MaintenanceWindow recurrence type values.
+const (
+	MaintenanceRecurrenceDaily   = "daily"
+	MaintenanceRecurrenceWeekly  = "weekly"
+	MaintenanceRecurrenceMonthly = "monthly"
+)
 
 // Region represents an available monitoring region.
 type Region struct {
