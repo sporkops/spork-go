@@ -43,6 +43,13 @@ type verifyCfg struct {
 // WithReplayWindow overrides the default 5-minute replay window. Pass a
 // larger value when the verifier's clock is known to be loose, or a smaller
 // value when the integration has a strict freshness requirement.
+//
+// Security note: widening the window directly weakens replay protection. A
+// signed payload captured within the window can be re-delivered verbatim. For
+// most integrations 5–15 minutes is appropriate; windows of an hour or more
+// should only be used in conjunction with an application-level replay guard
+// (e.g. persisting the signed timestamp + event ID and rejecting duplicates).
+// Zero or negative durations are accepted but will reject every request.
 func WithReplayWindow(d time.Duration) VerifyWebhookOption {
 	return func(c *verifyCfg) { c.replayWindow = d }
 }
