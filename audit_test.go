@@ -163,7 +163,7 @@ func TestListDeliveryLogs_WithChannelFilter(t *testing.T) {
 			"data": []DeliveryLog{
 				{ID: "dl_1", ChannelID: "ach_1", ChannelType: "email", Event: "monitor.down", Status: "success"},
 			},
-			"meta": map[string]int{"total": 1, "page": 1, "per_page": 100},
+			"meta": map[string]any{"has_more": false},
 		})
 	})
 
@@ -187,7 +187,7 @@ func TestListDeliveryLogs_NoFilter(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"data": []DeliveryLog{},
-			"meta": map[string]int{"total": 0, "page": 1, "per_page": 100},
+			"meta": map[string]any{"has_more": false},
 		})
 	})
 
@@ -370,7 +370,7 @@ func TestListSubscribers(t *testing.T) {
 			"data": []EmailSubscriber{
 				{ID: "sub_1", Email: "a@x.com", Confirmed: true},
 			},
-			"meta": map[string]int{"total": 1, "page": 1, "per_page": 100},
+			"meta": map[string]any{"has_more": false},
 		})
 	})
 

@@ -64,7 +64,7 @@ func TestListMaintenanceWindows(t *testing.T) {
 				{ID: "mw_1", Name: "One"},
 				{ID: "mw_2", Name: "Two"},
 			},
-			"meta": map[string]int{"total": 2, "page": 1, "per_page": 100},
+			"meta": map[string]any{"has_more": false},
 		})
 	})
 
