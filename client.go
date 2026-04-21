@@ -263,26 +263,24 @@ func (c *Client) doSingle(ctx context.Context, method, path string, body, result
 // doList performs a request and unwraps a list {data: [...], "meta": {...}} envelope,
 // returning the pagination metadata alongside the deserialised data so callers
 // (typically auto-paginators) can decide whether to fetch another page.
-func (c *Client) doList(ctx context.Context, method, path string, body any, result any) (PageMeta, error) {
+func (c *Client) doList(ctx context.Context, method, path string, body any, result any) (PageInfo, error) {
 	respBody, _, err := c.rawRequest(ctx, method, path, body)
 	if err != nil {
-		return PageMeta{}, err
+		return PageInfo{}, err
 	}
 	var envelope listEnvelope
 	if len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, &envelope); err != nil {
-			return PageMeta{}, fmt.Errorf("parsing response envelope: %w", err)
+			return PageInfo{}, fmt.Errorf("parsing response envelope: %w", err)
 		}
 		if result != nil && len(envelope.Data) > 0 {
 			if err := json.Unmarshal(envelope.Data, result); err != nil {
-				return PageMeta{}, fmt.Errorf("parsing response data: %w", err)
+				return PageInfo{}, fmt.Errorf("parsing response data: %w", err)
 			}
 		}
 	}
-	return PageMeta{
-		Total:      envelope.Meta.Total,
-		Page:       envelope.Meta.Page,
-		PerPage:    envelope.Meta.PerPage,
+	return PageInfo{
+		HasMore:    envelope.Meta.HasMore,
 		NextCursor: envelope.Meta.NextCursor,
 	}, nil
 }
@@ -410,15 +408,10 @@ type dataEnvelope struct {
 }
 
 // listEnvelope wraps the standard API list response: {"data": [...], "meta": {...}}.
-// The meta fields cover both legacy page-based pagination (Total, Page,
-// PerPage) and the cursor-based convention (NextCursor); the server
-// populates whichever are meaningful for that endpoint.
 type listEnvelope struct {
 	Data json.RawMessage `json:"data"`
 	Meta struct {
-		Total      int    `json:"total"`
-		Page       int    `json:"page"`
-		PerPage    int    `json:"per_page"`
+		HasMore    bool   `json:"has_more"`
 		NextCursor string `json:"next_cursor"`
 	} `json:"meta"`
 }

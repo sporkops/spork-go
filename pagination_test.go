@@ -9,36 +9,30 @@ import (
 	"testing"
 )
 
-// TestListMonitors_AutoPaginatesPastFirstPage is the regression test for the
-// single nastiest pre-v0.4.0 SDK bug: ListMonitors hard-coded per_page=100
-// and only fetched page 1, silently truncating results for organizations
-// with more than 100 monitors.
-//
-// The fake server below serves 253 synthetic monitors across three pages;
-// we assert the SDK returns every one of them and makes exactly three
-// HTTP calls to do it.
-func TestListMonitors_AutoPaginatesPastFirstPage(t *testing.T) {
+// TestListMonitors_AutoPaginatesViaCursor asserts that the auto-paginator
+// walks every page via the server's next_cursor without short-circuiting
+// on the first page.
+func TestListMonitors_AutoPaginatesViaCursor(t *testing.T) {
 	const total = 253
+	const perPage = 100
 	var calls int
 	c, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		q := r.URL.Query()
-		page, _ := strconv.Atoi(q.Get("page"))
-		perPage, _ := strconv.Atoi(q.Get("per_page"))
-		if page < 1 {
-			page = 1
-		}
-		if perPage < 1 {
-			perPage = defaultPerPage
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		if limit < 1 {
+			limit = defaultLimit
 		}
 
-		start := (page - 1) * perPage
-		end := start + perPage
+		// Decode the caller-supplied cursor as a simple integer offset
+		// — the SDK treats it as opaque, so any scheme works server-side.
+		start := 0
+		if cur := q.Get("cursor"); cur != "" {
+			start, _ = strconv.Atoi(cur)
+		}
+		end := start + limit
 		if end > total {
 			end = total
-		}
-		if start > total {
-			start = total
 		}
 
 		data := make([]Monitor, 0, end-start)
@@ -46,9 +40,16 @@ func TestListMonitors_AutoPaginatesPastFirstPage(t *testing.T) {
 			data = append(data, Monitor{ID: fmt.Sprintf("mon_%d", i), Name: fmt.Sprintf("monitor %d", i)})
 		}
 
+		nextCursor := ""
+		if end < total {
+			nextCursor = strconv.Itoa(end)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": data,
-			"meta": map[string]int{"total": total, "page": page, "per_page": perPage},
+			"meta": map[string]any{
+				"has_more":    nextCursor != "",
+				"next_cursor": nextCursor,
+			},
 		})
 	})
 
@@ -59,33 +60,12 @@ func TestListMonitors_AutoPaginatesPastFirstPage(t *testing.T) {
 	if len(monitors) != total {
 		t.Fatalf("got %d monitors, want %d", len(monitors), total)
 	}
-	// Spot-check the first, middle, and last records to make sure we didn't
-	// just double-count page 1.
 	if monitors[0].ID != "mon_0" || monitors[total-1].ID != fmt.Sprintf("mon_%d", total-1) {
 		t.Fatalf("boundary mismatch: first=%s last=%s", monitors[0].ID, monitors[total-1].ID)
 	}
+	// 253/100 rounds up to 3 pages.
 	if calls != 3 {
-		t.Errorf("expected 3 HTTP calls (253 / 100, rounded up), got %d", calls)
-	}
-}
-
-func TestListMonitorsPage_RespectsExplicitOptions(t *testing.T) {
-	var gotQuery url.Values
-	c, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.Query()
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": []Monitor{},
-			"meta": map[string]int{"total": 0, "page": 2, "per_page": 25},
-		})
-	})
-
-	_, _, err := c.ListMonitorsWithOptions(t.Context(), ListOptions{Page: 2, PerPage: 25})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotQuery.Get("page") != "2" || gotQuery.Get("per_page") != "25" {
-		t.Errorf("expected page=2 per_page=25, got page=%q per_page=%q",
-			gotQuery.Get("page"), gotQuery.Get("per_page"))
+		t.Errorf("expected 3 HTTP calls, got %d", calls)
 	}
 }
 
@@ -95,8 +75,8 @@ func TestListOptions_FiltersAppearInQueryString(t *testing.T) {
 	// dropped so callers can pass a partial-filter map without emitting
 	// no-op parameters.
 	opts := ListOptions{
-		Page:    2,
-		PerPage: 25,
+		Cursor: "cur_abc",
+		Limit:  25,
 		Filters: map[string]string{
 			"type":   "http",
 			"status": "down",
@@ -105,26 +85,34 @@ func TestListOptions_FiltersAppearInQueryString(t *testing.T) {
 		},
 	}
 	got := opts.query()
-	// Expected ordering: pagination first, then filters in alphabetical key
-	// order (q, status, type — tag is dropped).
-	want := "page=2&per_page=25&q=error+code+500%266&status=down&type=http"
+	want := "cursor=cur_abc&limit=25&q=error+code+500%266&status=down&type=http"
 	if got != want {
 		t.Errorf("query() = %q, want %q", got, want)
 	}
 }
 
-func TestListOptions_Next_PreservesFilters(t *testing.T) {
-	// Locks in the regression that auto-pagination must not silently drop
-	// filters on page 2 and beyond — otherwise ListMonitors({Filters: {...}})
-	// would return page 1 filtered and every subsequent page unfiltered.
+func TestListOptions_EmitsLimitOnFirstPage(t *testing.T) {
+	// No cursor, no filters → limit-only query string.
+	opts := ListOptions{Limit: 25}
+	got := opts.query()
+	if got != "limit=25" {
+		t.Errorf("query() = %q, want limit=25", got)
+	}
+}
+
+func TestListOptions_Next_PreservesFiltersAndLimit(t *testing.T) {
+	// Auto-pagination must not silently drop filters on page 2 and
+	// beyond, and must carry the caller's Limit through.
 	opts := ListOptions{
-		Page:    1,
-		PerPage: 100,
+		Limit:   100,
 		Filters: map[string]string{"status": "down"},
 	}
-	next := opts.next(PageMeta{Page: 1, PerPage: 100, Total: 250})
-	if next.Page != 2 || next.PerPage != 100 {
-		t.Errorf("next() lost pagination: %+v", next)
+	next := opts.next(PageInfo{HasMore: true, NextCursor: "cur_xyz"})
+	if next.Cursor != "cur_xyz" {
+		t.Errorf("next() should carry cursor, got %q", next.Cursor)
+	}
+	if next.Limit != 100 {
+		t.Errorf("next() should preserve Limit, got %d", next.Limit)
 	}
 	if next.Filters["status"] != "down" {
 		t.Errorf("next() dropped filters: %+v", next.Filters)
@@ -137,7 +125,7 @@ func TestListMonitorsPage_ForwardsFiltersToServer(t *testing.T) {
 		gotQuery = r.URL.Query()
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": []Monitor{},
-			"meta": map[string]int{"total": 0, "page": 1, "per_page": 100},
+			"meta": map[string]any{"has_more": false},
 		})
 	})
 
@@ -153,15 +141,7 @@ func TestListMonitorsPage_ForwardsFiltersToServer(t *testing.T) {
 }
 
 func TestListMonitors_FollowsNextCursorWhenProvided(t *testing.T) {
-	// Locks in the P0-3 iterator change: when the server hands us an
-	// opaque next_cursor, the auto-paginator must pass it back verbatim
-	// on the next request rather than incrementing a page counter.
-	//
-	// Two-page fake: first response carries NextCursor="cur_2" and
-	// Page=1 is deliberately misleading (imagine a cursor-native
-	// endpoint that does not track page numbers). If the SDK were
-	// ignoring NextCursor, page-arithmetic would terminate the loop or
-	// re-request page 1 forever.
+	// The auto-paginator passes the server's next_cursor back verbatim.
 	calls := 0
 	c, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -174,22 +154,18 @@ func TestListMonitors_FollowsNextCursorWhenProvided(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"data": []Monitor{{ID: "mon_1"}},
 				"meta": map[string]any{
-					"total":       0, // cursor-native server — total not reported
-					"page":        1,
-					"per_page":    100,
+					"has_more":    true,
 					"next_cursor": "cur_page_2",
 				},
 			})
 		case 2:
 			if q.Get("cursor") != "cur_page_2" {
-				t.Errorf("second call must carry the cursor the server returned, got %q", q.Get("cursor"))
+				t.Errorf("second call must carry the server's next_cursor, got %q", q.Get("cursor"))
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"data": []Monitor{{ID: "mon_2"}},
 				"meta": map[string]any{
-					"total":       0,
-					"page":        0,
-					"per_page":    100,
+					"has_more":    false,
 					"next_cursor": "",
 				},
 			})
@@ -210,27 +186,11 @@ func TestListMonitors_FollowsNextCursorWhenProvided(t *testing.T) {
 	}
 }
 
-func TestPageMeta_HasMore(t *testing.T) {
-	tests := []struct {
-		name     string
-		meta     PageMeta
-		returned int
-		want     bool
-	}{
-		{"more pages remain", PageMeta{Total: 150, Page: 1, PerPage: 100}, 100, true},
-		{"last full page", PageMeta{Total: 100, Page: 1, PerPage: 100}, 100, false},
-		{"partial last page", PageMeta{Total: 150, Page: 2, PerPage: 100}, 50, false},
-		{"zero total falls back to short-page heuristic", PageMeta{PerPage: 100}, 100, true},
-		{"zero total with short page", PageMeta{PerPage: 100}, 42, false},
-		// Cursor-native paths: NextCursor trumps everything else.
-		{"cursor present trumps short-page heuristic", PageMeta{NextCursor: "cur_xyz", PerPage: 100}, 42, true},
-		{"cursor empty + short page = done", PageMeta{NextCursor: "", PerPage: 100}, 50, false},
+func TestPageInfo_HasMore(t *testing.T) {
+	if !(PageInfo{HasMore: true, NextCursor: "cur_x"}).HasMore {
+		t.Error("expected HasMore=true to survive round-trip")
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.meta.HasMore(tc.returned); got != tc.want {
-				t.Errorf("HasMore() = %v, want %v", got, tc.want)
-			}
-		})
+	if (PageInfo{HasMore: false}).HasMore {
+		t.Error("expected HasMore=false to survive round-trip")
 	}
 }
