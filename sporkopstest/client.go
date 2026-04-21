@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -385,22 +384,13 @@ func writeData(w http.ResponseWriter, status int, data any) {
 }
 
 func writeList(w http.ResponseWriter, items any, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
-	if page < 1 {
-		page = 1
-	}
-	if perPage < 1 {
-		perPage = 100
-	}
-	// The fake doesn't actually paginate large result sets — it returns
-	// everything on page 1 and reports an accurate total so the SDK
-	// iterator terminates cleanly.
-	total := sliceLen(items)
+	// The fake doesn't actually paginate — it returns everything in one
+	// page, so has_more is always false and next_cursor is always empty.
+	_ = r // query params ignored; the fake has no keyset
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"data": items,
-		"meta": map[string]int{"total": total, "page": page, "per_page": perPage},
+		"meta": map[string]any{"has_more": false},
 	})
 }
 

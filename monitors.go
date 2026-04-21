@@ -75,7 +75,7 @@ func (c *Client) DeleteMonitor(ctx context.Context, id string) error {
 
 // GetMonitorResults returns recent check results for a monitor.
 func (c *Client) GetMonitorResults(ctx context.Context, id string, limit int) ([]MonitorResult, error) {
-	path := fmt.Sprintf("/monitors/%s/results?per_page=%d", url.PathEscape(id), limit)
+	path := fmt.Sprintf("/monitors/%s/results?limit=%d", url.PathEscape(id), limit)
 	var result []MonitorResult
 	if _, err := c.doList(ctx, "GET", path, nil, &result); err != nil {
 		return nil, err
@@ -112,7 +112,7 @@ func (c *Client) GetMonitorStats(ctx context.Context, id string) (*MonitorStats,
 // caps limit at 100.
 //
 // The signature deviates from the rest of the SDK (which uses
-// ListXWithOptions + PageMeta) because this endpoint's wire envelope
+// ListXWithOptions + PageInfo) because this endpoint's wire envelope
 // is non-standard — next_cursor is at the top level rather than nested
 // under meta — and this method mirrors that shape directly rather than
 // hiding it behind a shim. Callers that want to iterate the full trail

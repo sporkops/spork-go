@@ -114,7 +114,7 @@ func TestListMonitors(t *testing.T) {
 				{ID: "mon_1", Name: "Mon 1"},
 				{ID: "mon_2", Name: "Mon 2"},
 			},
-			"meta": map[string]int{"total": 2, "page": 1, "per_page": 100},
+			"meta": map[string]any{"has_more": false},
 		})
 	})
 
