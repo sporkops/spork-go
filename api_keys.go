@@ -7,14 +7,21 @@ import (
 
 // CreateAPIKeyInput is the request body for creating an API key.
 type CreateAPIKeyInput struct {
-	Name          string `json:"name"`
-	ExpiresInDays *int   `json:"expires_in_days,omitempty"`
+	Name          string   `json:"name"`
+	ExpiresInDays *int     `json:"expires_in_days,omitempty"`
+	// Scopes granted to the new key. Empty/nil defaults server-side to
+	// ["monitors:admin"]. The "admin" super-scope satisfies every check.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // CreateAPIKey creates a new API key. Set ExpiresInDays to nil for no expiry.
 func (c *Client) CreateAPIKey(ctx context.Context, input *CreateAPIKeyInput) (*APIKey, error) {
+	path, err := c.orgPath(ctx, "/api-keys")
+	if err != nil {
+		return nil, err
+	}
 	var result APIKey
-	if err := c.doSingle(ctx, "POST", "/api-keys", input, &result); err != nil {
+	if err := c.doSingle(ctx, "POST", path, input, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -31,9 +38,12 @@ func (c *Client) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 // ListAPIKeysWithOptions returns a single page of API keys along with pagination
 // metadata. Use ListAPIKeys if you want every record.
 func (c *Client) ListAPIKeysWithOptions(ctx context.Context, opts ListOptions) ([]APIKey, PageMeta, error) {
+	base, err := c.orgPath(ctx, "/api-keys")
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
 	var result []APIKey
-	path := "/api-keys?" + opts.query()
-	meta, err := c.doList(ctx, "GET", path, nil, &result)
+	meta, err := c.doList(ctx, "GET", base+"?"+opts.query(), nil, &result)
 	if err != nil {
 		return nil, PageMeta{}, err
 	}
@@ -42,5 +52,9 @@ func (c *Client) ListAPIKeysWithOptions(ctx context.Context, opts ListOptions) (
 
 // DeleteAPIKey deletes an API key by ID.
 func (c *Client) DeleteAPIKey(ctx context.Context, id string) error {
-	return c.doNoContent(ctx, "DELETE", "/api-keys/"+url.PathEscape(id), nil)
+	path, err := c.orgPath(ctx, "/api-keys/"+url.PathEscape(id))
+	if err != nil {
+		return err
+	}
+	return c.doNoContent(ctx, "DELETE", path, nil)
 }

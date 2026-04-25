@@ -70,6 +70,7 @@ func TestWithHTTPMiddleware_SeesRequestAndResponse(t *testing.T) {
 		WithAPIKey("sk_test_key"),
 		WithBaseURL(srv.URL),
 		WithHTTPMiddleware(mw),
+		WithOrganization("org_test"),
 	)
 
 	if _, err := c.GetMonitor(t.Context(), "mon_1"); err != nil {
@@ -78,7 +79,7 @@ func TestWithHTTPMiddleware_SeesRequestAndResponse(t *testing.T) {
 	if serverHits.Load() != 1 {
 		t.Errorf("expected server to see exactly one request, got %d", serverHits.Load())
 	}
-	if seenMethod != "GET" || seenPath != "/monitors/mon_1" {
+	if seenMethod != "GET" || seenPath != "/orgs/org_test/monitors/mon_1" {
 		t.Errorf("middleware did not see expected request: method=%q path=%q", seenMethod, seenPath)
 	}
 	if seenAuth != "Bearer sk_test_key" {

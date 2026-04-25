@@ -143,6 +143,27 @@ func (f *FakeServer) nextID(prefix string) string {
 }
 
 func (f *FakeServer) route(w http.ResponseWriter, r *http.Request) {
+	// Strip the /orgs/{orgID}/ prefix the SDK adds for org-scoped calls
+	// before dispatching to the per-resource handlers. The fake doesn't
+	// model multiple orgs — every caller sees the same in-memory store —
+	// so we accept any orgID and rewrite once here. Custom handlers
+	// register against the unprefixed path so they keep working when
+	// the SDK switches between flat and org-nested URLs.
+	path := r.URL.Path
+	if strings.HasPrefix(path, "/orgs/") {
+		rest := strings.TrimPrefix(path, "/orgs/")
+		if slash := strings.Index(rest, "/"); slash > 0 {
+			path = rest[slash:]
+		} else {
+			path = "/"
+		}
+		r2 := *r
+		u2 := *r.URL
+		u2.Path = path
+		r2.URL = &u2
+		r = &r2
+	}
+
 	f.mu.Lock()
 	if h, ok := f.customHandlers[r.Method+" "+r.URL.Path]; ok {
 		f.mu.Unlock()
@@ -156,6 +177,12 @@ func (f *FakeServer) route(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch {
+	case r.URL.Path == "/users/me/orgs" && r.Method == http.MethodGet:
+		// Single-element list so SDK auto-resolution lands on a stable
+		// org ID without the test having to pre-configure WithOrganization.
+		writeList(w, []spork.OrgSummary{{ID: "org_fake", Name: "Fake Org", Role: "owner"}}, r)
+	case r.URL.Path == "/users/me" && r.Method == http.MethodGet:
+		writeData(w, http.StatusOK, spork.User{UID: "uid_fake", Email: "fake@example.com"})
 	case strings.HasPrefix(r.URL.Path, "/monitors"):
 		f.handleMonitors(w, r)
 	case strings.HasPrefix(r.URL.Path, "/alert-channels"):

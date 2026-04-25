@@ -7,8 +7,12 @@ import (
 
 // CreateAlertChannel creates a new alert channel.
 func (c *Client) CreateAlertChannel(ctx context.Context, ch *AlertChannel) (*AlertChannel, error) {
+	path, err := c.orgPath(ctx, "/alert-channels")
+	if err != nil {
+		return nil, err
+	}
 	var result AlertChannel
-	if err := c.doSingle(ctx, "POST", "/alert-channels", ch, &result); err != nil {
+	if err := c.doSingle(ctx, "POST", path, ch, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -25,9 +29,12 @@ func (c *Client) ListAlertChannels(ctx context.Context) ([]AlertChannel, error) 
 // ListAlertChannelsWithOptions returns a single page of alert channels along with
 // pagination metadata. Use ListAlertChannels if you want every record.
 func (c *Client) ListAlertChannelsWithOptions(ctx context.Context, opts ListOptions) ([]AlertChannel, PageMeta, error) {
+	base, err := c.orgPath(ctx, "/alert-channels")
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
 	var result []AlertChannel
-	path := "/alert-channels?" + opts.query()
-	meta, err := c.doList(ctx, "GET", path, nil, &result)
+	meta, err := c.doList(ctx, "GET", base+"?"+opts.query(), nil, &result)
 	if err != nil {
 		return nil, PageMeta{}, err
 	}
@@ -36,8 +43,12 @@ func (c *Client) ListAlertChannelsWithOptions(ctx context.Context, opts ListOpti
 
 // GetAlertChannel returns a single alert channel by ID.
 func (c *Client) GetAlertChannel(ctx context.Context, id string) (*AlertChannel, error) {
+	path, err := c.orgPath(ctx, "/alert-channels/"+url.PathEscape(id))
+	if err != nil {
+		return nil, err
+	}
 	var result AlertChannel
-	if err := c.doSingle(ctx, "GET", "/alert-channels/"+url.PathEscape(id), nil, &result); err != nil {
+	if err := c.doSingle(ctx, "GET", path, nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -53,8 +64,12 @@ func (c *Client) GetAlertChannel(ctx context.Context, id string) (*AlertChannel,
 // struct here. The CLI's `spork alert-channel update` command follows
 // this pattern.
 func (c *Client) UpdateAlertChannel(ctx context.Context, id string, ch *AlertChannel) (*AlertChannel, error) {
+	path, err := c.orgPath(ctx, "/alert-channels/"+url.PathEscape(id))
+	if err != nil {
+		return nil, err
+	}
 	var result AlertChannel
-	if err := c.doSingle(ctx, "PUT", "/alert-channels/"+url.PathEscape(id), ch, &result); err != nil {
+	if err := c.doSingle(ctx, "PUT", path, ch, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -62,18 +77,30 @@ func (c *Client) UpdateAlertChannel(ctx context.Context, id string, ch *AlertCha
 
 // DeleteAlertChannel deletes an alert channel by ID.
 func (c *Client) DeleteAlertChannel(ctx context.Context, id string) error {
-	return c.doNoContent(ctx, "DELETE", "/alert-channels/"+url.PathEscape(id), nil)
+	path, err := c.orgPath(ctx, "/alert-channels/"+url.PathEscape(id))
+	if err != nil {
+		return err
+	}
+	return c.doNoContent(ctx, "DELETE", path, nil)
 }
 
 // TestAlertChannel sends a test notification to an alert channel.
 func (c *Client) TestAlertChannel(ctx context.Context, id string) error {
-	return c.doNoContent(ctx, "POST", "/alert-channels/"+url.PathEscape(id)+"/test", nil)
+	path, err := c.orgPath(ctx, "/alert-channels/"+url.PathEscape(id)+"/test")
+	if err != nil {
+		return err
+	}
+	return c.doNoContent(ctx, "POST", path, nil)
 }
 
 // ResendAlertChannelVerification resends the verification email for an
 // unverified email alert channel. Rate limited to 5 per user per 10 minutes.
 func (c *Client) ResendAlertChannelVerification(ctx context.Context, id string) error {
-	return c.doNoContent(ctx, "POST", "/alert-channels/"+url.PathEscape(id)+"/resend-verification", nil)
+	path, err := c.orgPath(ctx, "/alert-channels/"+url.PathEscape(id)+"/resend-verification")
+	if err != nil {
+		return err
+	}
+	return c.doNoContent(ctx, "POST", path, nil)
 }
 
 // ListDeliveryLogs returns alert delivery log entries, transparently
@@ -88,11 +115,15 @@ func (c *Client) ListDeliveryLogs(ctx context.Context, channelID string) ([]Deli
 // ListDeliveryLogsWithOptions returns a single page of delivery logs along
 // with pagination metadata.
 func (c *Client) ListDeliveryLogsWithOptions(ctx context.Context, channelID string, opts ListOptions) ([]DeliveryLog, PageMeta, error) {
-	var result []DeliveryLog
-	path := "/delivery-logs?" + opts.query()
+	base, err := c.orgPath(ctx, "/delivery-logs")
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+	path := base + "?" + opts.query()
 	if channelID != "" {
 		path += "&channel_id=" + url.QueryEscape(channelID)
 	}
+	var result []DeliveryLog
 	meta, err := c.doList(ctx, "GET", path, nil, &result)
 	if err != nil {
 		return nil, PageMeta{}, err

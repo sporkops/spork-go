@@ -53,8 +53,12 @@ type RunMonitorResult struct {
 //	fmt.Printf("status=%s code=%d dur=%dms\n",
 //	    result.Status, result.HTTPCode, result.ResponseTimeMs)
 func (c *Client) RunMonitor(ctx context.Context, input *RunMonitorInput) (*RunMonitorResult, error) {
+	path, err := c.orgPath(ctx, "/monitors/run")
+	if err != nil {
+		return nil, err
+	}
 	var result RunMonitorResult
-	if err := c.doSingle(ctx, "POST", "/monitors/run", input, &result); err != nil {
+	if err := c.doSingle(ctx, "POST", path, input, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

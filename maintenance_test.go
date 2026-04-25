@@ -9,7 +9,7 @@ import (
 
 func TestCreateMaintenanceWindow(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/maintenance-windows" {
+		if r.Method != "POST" || r.URL.Path != "/orgs/org_test/maintenance-windows" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		var body MaintenanceWindow
@@ -79,7 +79,7 @@ func TestListMaintenanceWindows(t *testing.T) {
 
 func TestGetMaintenanceWindow(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/maintenance-windows/mw_1" {
+		if r.URL.Path != "/orgs/org_test/maintenance-windows/mw_1" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -119,7 +119,7 @@ func TestUpdateMaintenanceWindow(t *testing.T) {
 
 func TestCancelMaintenanceWindow(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/maintenance-windows/mw_1/cancel" {
+		if r.Method != "POST" || r.URL.Path != "/orgs/org_test/maintenance-windows/mw_1/cancel" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")

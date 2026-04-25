@@ -63,8 +63,12 @@ type TriggerWebhookResult struct {
 //	fmt.Printf("delivered=%t status=%d dur=%dms\n",
 //	    result.Delivered, result.StatusCode, result.DurationMs)
 func (c *Client) TriggerWebhook(ctx context.Context, input *TriggerWebhookInput) (*TriggerWebhookResult, error) {
+	path, err := c.orgPath(ctx, "/webhooks/trigger")
+	if err != nil {
+		return nil, err
+	}
 	var result TriggerWebhookResult
-	if err := c.doSingle(ctx, "POST", "/webhooks/trigger", input, &result); err != nil {
+	if err := c.doSingle(ctx, "POST", path, input, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

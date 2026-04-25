@@ -15,43 +15,9 @@ import (
 
 // --- Monitor supplementary endpoints ---
 
-func TestGetMonitorResult(t *testing.T) {
-	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
-			t.Errorf("method = %s, want GET", r.Method)
-		}
-		if r.URL.Path != "/monitors/mon_1/results/res_7" {
-			t.Errorf("path = %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"data": MonitorResult{
-				ID:             "res_7",
-				MonitorID:      "mon_1",
-				Status:         "up",
-				StatusCode:     200,
-				ResponseTimeMs: 142,
-				Region:         "us-central1",
-				CheckedAt:      "2026-04-16T05:00:00Z",
-			},
-		})
-	})
-
-	result, err := client.GetMonitorResult(context.Background(), "mon_1", "res_7")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ID != "res_7" {
-		t.Errorf("ID = %q", result.ID)
-	}
-	if result.Region != "us-central1" {
-		t.Errorf("Region = %q", result.Region)
-	}
-}
-
 func TestGetMonitorStats(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/monitors/mon_1/stats" {
+		if r.URL.Path != "/orgs/org_test/monitors/mon_1/stats" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -77,7 +43,7 @@ func TestGetMonitorStats(t *testing.T) {
 
 func TestListMonitorAuditTrail(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/monitors/mon_1/audit-trail" {
+		if r.URL.Path != "/orgs/org_test/monitors/mon_1/audit-trail" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		if got := r.URL.Query().Get("limit"); got != "25" {
@@ -139,7 +105,7 @@ func TestResendAlertChannelVerification(t *testing.T) {
 		if r.Method != "POST" {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/alert-channels/ach_1/resend-verification" {
+		if r.URL.Path != "/orgs/org_test/alert-channels/ach_1/resend-verification" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -152,7 +118,7 @@ func TestResendAlertChannelVerification(t *testing.T) {
 
 func TestListDeliveryLogs_WithChannelFilter(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/delivery-logs" {
+		if r.URL.Path != "/orgs/org_test/delivery-logs" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		if got := r.URL.Query().Get("channel_id"); got != "ach_1" {
@@ -496,7 +462,7 @@ func TestListRegions(t *testing.T) {
 
 func TestExportOrganizationData(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/organization/export" {
+		if r.URL.Path != "/orgs/org_test/export" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")

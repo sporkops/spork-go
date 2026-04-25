@@ -60,6 +60,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -73,7 +74,7 @@ const (
 )
 
 // Version is the SDK version, used in the User-Agent header.
-var Version = "0.5.0"
+var Version = "0.8.0"
 
 // DefaultRetryPolicy is the retry policy used when WithRetryPolicy is not set.
 // It performs up to 3 attempts with exponential backoff starting at 500ms,
@@ -114,14 +115,20 @@ type HTTPMiddleware func(http.RoundTripper) http.RoundTripper
 
 // Client is an HTTP client for the Spork API.
 type Client struct {
-	baseURL     string
-	token       string
-	httpClient  *http.Client
-	userAgent   string
-	retryPolicy RetryPolicy
-	logger      Logger
-	rateLimit   rateLimitStore
-	middleware  []HTTPMiddleware
+	baseURL        string
+	token          string
+	httpClient     *http.Client
+	userAgent      string
+	retryPolicy    RetryPolicy
+	logger         Logger
+	rateLimit      rateLimitStore
+	middleware     []HTTPMiddleware
+	organizationID string
+	// orgResolveOnce guards lazy resolution via /users/me/orgs when no
+	// explicit organization ID was provided. The first org-scoped call
+	// performs the lookup; subsequent calls reuse the cached value.
+	orgResolveOnce sync.Once
+	orgResolveErr  error
 }
 
 // Option configures a Client.
@@ -135,6 +142,27 @@ func WithAPIKey(key string) Option {
 // WithBaseURL overrides the default API base URL.
 func WithBaseURL(u string) Option {
 	return func(c *Client) { c.baseURL = u }
+}
+
+// WithOrganization sets the organization ID used to scope API calls
+// to monitors, alert channels, members, billing, etc. Required (or
+// auto-resolvable, see below) for every endpoint nested under
+// /orgs/{orgID}/... in the REST surface.
+//
+// When the option is not set, the SDK lazily resolves the org on the
+// first org-scoped call by issuing a single GET /users/me/orgs and
+// using the first organization in the response. That works
+// transparently for API-key callers — keys are bound to one org so
+// the listing returns exactly one record. Firebase-authenticated
+// callers who belong to several orgs should pick one explicitly with
+// WithOrganization or via SetOrganization rather than relying on the
+// auto-resolved choice.
+//
+// Status-page and incident endpoints are NOT org-scoped in the URL
+// (they live at /v1/status-pages/... and /v1/incidents/...) and do
+// not require this option to function.
+func WithOrganization(orgID string) Option {
+	return func(c *Client) { c.organizationID = orgID }
 }
 
 // WithHTTPClient sets a custom http.Client.
@@ -240,6 +268,55 @@ func (c *Client) Token() string {
 // BaseURL returns the configured base URL.
 func (c *Client) BaseURL() string {
 	return c.baseURL
+}
+
+// OrganizationID returns the organization ID the client is scoped to,
+// resolving it once via /users/me/orgs if WithOrganization was not
+// supplied. The first call may issue a network request; subsequent
+// calls return the cached value (or cached error). Callers who have
+// already authenticated and just want the ID can use this directly.
+func (c *Client) OrganizationID(ctx context.Context) (string, error) {
+	if c.organizationID != "" {
+		return c.organizationID, nil
+	}
+	c.orgResolveOnce.Do(func() {
+		orgs, err := c.ListMyOrgs(ctx)
+		if err != nil {
+			c.orgResolveErr = fmt.Errorf("auto-resolving organization: %w", err)
+			return
+		}
+		if len(orgs) == 0 {
+			c.orgResolveErr = fmt.Errorf("auto-resolving organization: caller has no organization memberships; create one with CreateOrganization")
+			return
+		}
+		c.organizationID = orgs[0].ID
+	})
+	if c.orgResolveErr != nil {
+		return "", c.orgResolveErr
+	}
+	return c.organizationID, nil
+}
+
+// SetOrganization overrides the active organization ID. Useful when a
+// caller wants to switch tenants on a long-lived client (e.g. a CLI
+// command that lists every org and runs the same query against each).
+// Calling SetOrganization after auto-resolution clears the resolution
+// state so the new value is used on the next call.
+func (c *Client) SetOrganization(orgID string) {
+	c.organizationID = orgID
+	c.orgResolveOnce = sync.Once{}
+	c.orgResolveErr = nil
+}
+
+// orgPath prepends /orgs/{orgID} to suffix, resolving the org ID if
+// necessary. suffix must start with "/". Used by every org-scoped
+// API call.
+func (c *Client) orgPath(ctx context.Context, suffix string) (string, error) {
+	orgID, err := c.OrganizationID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return "/orgs/" + url.PathEscape(orgID) + suffix, nil
 }
 
 // doSingle performs a request and unwraps a single-item {data: ...} envelope.
