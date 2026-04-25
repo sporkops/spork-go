@@ -344,7 +344,7 @@ func TestCreateAlertChannel(t *testing.T) {
 
 func TestCreateStatusPage(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/status-pages" {
+		if r.Method != "POST" || r.URL.Path != "/orgs/org_test/status-pages" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -368,7 +368,7 @@ func TestCreateStatusPage(t *testing.T) {
 
 func TestCreateIncident(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/status-pages/sp_1/incidents" {
+		if r.URL.Path != "/orgs/org_test/status-pages/sp_1/incidents" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -394,8 +394,8 @@ func TestListRecentIncidents(t *testing.T) {
 		if r.Method != "GET" {
 			t.Errorf("method = %s, want GET", r.Method)
 		}
-		if r.URL.Path != "/incidents" {
-			t.Errorf("path = %s, want /incidents", r.URL.Path)
+		if r.URL.Path != "/orgs/org_test/incidents" {
+			t.Errorf("path = %s, want /orgs/org_test/incidents", r.URL.Path)
 		}
 		if got := r.URL.Query().Get("limit"); got != "25" {
 			t.Errorf("limit = %q, want 25", got)

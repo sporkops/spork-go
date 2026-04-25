@@ -53,12 +53,15 @@ func TestListMonitorAuditTrail(t *testing.T) {
 			t.Errorf("cursor = %q, want c1", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		// Non-standard envelope: next_cursor at the top level, NOT under meta.
+		// Standard envelope: next_cursor lives under meta. Earlier wire
+		// shapes surfaced it at the top level; that shim was retired
+		// in 2026-04. Tests pin the new shape so a regression that
+		// re-introduces the top-level form fails here.
 		json.NewEncoder(w).Encode(map[string]any{
 			"data": []AuditTrailEntry{
 				{ID: "au_1", Timestamp: "2026-04-16T05:00:00Z", ActorEmail: "u@x.com", Source: "cli", Action: "updated"},
 			},
-			"next_cursor": "c2",
+			"meta": map[string]any{"has_more": true, "next_cursor": "c2"},
 		})
 	})
 
@@ -77,13 +80,22 @@ func TestListMonitorAuditTrail(t *testing.T) {
 	}
 }
 
-func TestListMonitorAuditTrail_OmitsParamsWhenUnset(t *testing.T) {
+func TestListMonitorAuditTrail_DefaultLimitOnZero(t *testing.T) {
+	// The previous wire shape special-cased "no limit" / "no cursor" by
+	// omitting query-string keys entirely; after the 2026-04 envelope
+	// normalisation this endpoint shares ListOptions.query() with every
+	// other list helper, so an unset limit lands on the SDK default
+	// (100). Pin that shape so a future divergence from the shared
+	// pagination plumbing trips the test.
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.RawQuery != "" {
-			t.Errorf("expected no query string, got %q", r.URL.RawQuery)
+		if got := r.URL.Query().Get("limit"); got != "100" {
+			t.Errorf("limit = %q, want 100 (SDK default)", got)
+		}
+		if got := r.URL.Query().Get("cursor"); got != "" {
+			t.Errorf("cursor should be empty when unset, got %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"data": []AuditTrailEntry{}, "next_cursor": ""})
+		json.NewEncoder(w).Encode(map[string]any{"data": []AuditTrailEntry{}, "meta": map[string]any{"has_more": false}})
 	})
 
 	entries, next, err := client.ListMonitorAuditTrail(context.Background(), "mon_1", 0, "")
@@ -169,7 +181,7 @@ func TestGetCustomDomainStatus(t *testing.T) {
 		if r.Method != "GET" {
 			t.Errorf("method = %s, want GET", r.Method)
 		}
-		if r.URL.Path != "/status-pages/sp_1/custom-domain" {
+		if r.URL.Path != "/orgs/org_test/status-pages/sp_1/custom-domain" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -198,7 +210,7 @@ func TestGetCustomDomainStatus(t *testing.T) {
 
 func TestCreateComponent(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/status-pages/sp_1/components" {
+		if r.Method != "POST" || r.URL.Path != "/orgs/org_test/status-pages/sp_1/components" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		var comp StatusComponent
@@ -230,7 +242,7 @@ func TestCreateComponent(t *testing.T) {
 // order=0.
 func TestUpdateComponent_PreservesZeroValues(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PUT" || r.URL.Path != "/status-pages/sp_1/components/cmp_1" {
+		if r.Method != "PUT" || r.URL.Path != "/orgs/org_test/status-pages/sp_1/components/cmp_1" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		bodyBytes, _ := io.ReadAll(r.Body)
@@ -261,7 +273,7 @@ func TestUpdateComponent_PreservesZeroValues(t *testing.T) {
 
 func TestDeleteComponent(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "DELETE" || r.URL.Path != "/status-pages/sp_1/components/cmp_1" {
+		if r.Method != "DELETE" || r.URL.Path != "/orgs/org_test/status-pages/sp_1/components/cmp_1" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -274,7 +286,7 @@ func TestDeleteComponent(t *testing.T) {
 
 func TestCreateComponentGroup(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/status-pages/sp_1/component-groups" {
+		if r.Method != "POST" || r.URL.Path != "/orgs/org_test/status-pages/sp_1/component-groups" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -295,7 +307,7 @@ func TestCreateComponentGroup(t *testing.T) {
 
 func TestUpdateComponentGroup(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PUT" || r.URL.Path != "/status-pages/sp_1/component-groups/grp_1" {
+		if r.Method != "PUT" || r.URL.Path != "/orgs/org_test/status-pages/sp_1/component-groups/grp_1" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -315,7 +327,7 @@ func TestUpdateComponentGroup(t *testing.T) {
 
 func TestDeleteComponentGroup(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "DELETE" || r.URL.Path != "/status-pages/sp_1/component-groups/grp_1" {
+		if r.Method != "DELETE" || r.URL.Path != "/orgs/org_test/status-pages/sp_1/component-groups/grp_1" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -328,7 +340,7 @@ func TestDeleteComponentGroup(t *testing.T) {
 
 func TestListSubscribers(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/status-pages/sp_1/subscribers" {
+		if r.URL.Path != "/orgs/org_test/status-pages/sp_1/subscribers" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -351,7 +363,7 @@ func TestListSubscribers(t *testing.T) {
 
 func TestGetSubscriberCount(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/status-pages/sp_1/subscribers/count" {
+		if r.URL.Path != "/orgs/org_test/status-pages/sp_1/subscribers/count" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -371,7 +383,7 @@ func TestGetSubscriberCount(t *testing.T) {
 
 func TestDeleteSubscriber(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "DELETE" || r.URL.Path != "/status-pages/sp_1/subscribers/sub_1" {
+		if r.Method != "DELETE" || r.URL.Path != "/orgs/org_test/status-pages/sp_1/subscribers/sub_1" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNoContent)

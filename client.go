@@ -122,8 +122,13 @@ type Client struct {
 	userAgent   string
 	retryPolicy RetryPolicy
 	logger      Logger
-	rateLimit   rateLimitStore
-	middleware  []HTTPMiddleware
+	// rateLimit is a pointer so a shallow Client copy (ForOrg) shares
+	// the rate-limit snapshot with the parent — which is the right
+	// semantics: rate limits apply to the API key, not the org. Vet
+	// also flags copying a sync.RWMutex by value, which the value
+	// form would force.
+	rateLimit  *rateLimitStore
+	middleware []HTTPMiddleware
 
 	// orgMu guards organizationID, orgResolveOnce, and orgResolveErr
 	// so concurrent callers (e.g. parallel Terraform resource ops) can
@@ -262,6 +267,7 @@ func NewClient(opts ...Option) *Client {
 		userAgent:      "spork-go-sdk/" + Version,
 		retryPolicy:    DefaultRetryPolicy,
 		logger:         nopLogger{},
+		rateLimit:      &rateLimitStore{},
 		orgResolveOnce: &sync.Once{},
 	}
 	for _, o := range opts {
@@ -463,12 +469,24 @@ func (c *Client) SetOrganization(orgID string) {
 // state is reset on the copy — `orgID` is treated as an explicit
 // override, so the new client never hits /users/me/orgs.
 func (c *Client) ForOrg(orgID string) *Client {
-	dup := *c
-	dup.orgMu = sync.Mutex{}
-	dup.organizationID = orgID
-	dup.orgResolveOnce = &sync.Once{}
-	dup.orgResolveErr = nil
-	return &dup
+	// Field-by-field copy rather than `dup := *c` because Client
+	// embeds sync.Mutex (orgMu) — copying a locked Mutex by value is
+	// undefined behaviour and `go vet` rightly flags it. The
+	// rateLimit, httpClient, logger, and middleware slice are all
+	// pointer-equal so the dup observes the parent's snapshot
+	// updates / shared transport stack.
+	return &Client{
+		baseURL:        c.baseURL,
+		token:          c.token,
+		httpClient:     c.httpClient,
+		userAgent:      c.userAgent,
+		retryPolicy:    c.retryPolicy,
+		logger:         c.logger,
+		rateLimit:      c.rateLimit,
+		middleware:     c.middleware,
+		organizationID: orgID,
+		orgResolveOnce: &sync.Once{},
+	}
 }
 
 // orgPath prepends /orgs/{orgID} to suffix, resolving the org ID if

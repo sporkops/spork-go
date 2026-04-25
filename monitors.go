@@ -2,7 +2,6 @@ package spork
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 )
@@ -126,35 +125,20 @@ func (c *Client) GetMonitorStats(ctx context.Context, id string) (*MonitorStats,
 // the end. Pass limit <= 0 for the server-side default (50); the server
 // caps limit at 100.
 //
-// The signature deviates from the rest of the SDK (which uses
-// ListXWithOptions + PageInfo) because this endpoint's wire envelope
-// is non-standard — next_cursor is at the top level rather than nested
-// under meta — and this method mirrors that shape directly rather than
-// hiding it behind a shim. Callers that want to iterate the full trail
-// can loop until nextCursor == "".
+// The wire envelope is the standard `{data, meta:{has_more, next_cursor}}`
+// — earlier versions surfaced next_cursor at the top level and that
+// SDK-side shim was retired in 2026-04 alongside the server change.
+// Iterate until the returned nextCursor is empty.
 func (c *Client) ListMonitorAuditTrail(ctx context.Context, id string, limit int, cursor string) ([]AuditTrailEntry, string, error) {
-	path, err := c.orgPath(ctx, fmt.Sprintf("/monitors/%s/audit-trail", url.PathEscape(id)))
+	base, err := c.orgPath(ctx, fmt.Sprintf("/monitors/%s/audit-trail", url.PathEscape(id)))
 	if err != nil {
 		return nil, "", err
 	}
-	sep := "?"
-	if limit > 0 {
-		path += fmt.Sprintf("%slimit=%d", sep, limit)
-		sep = "&"
-	}
-	if cursor != "" {
-		path += fmt.Sprintf("%scursor=%s", sep, url.QueryEscape(cursor))
-	}
-	respBody, _, err := c.rawRequest(ctx, "GET", path, nil)
+	opts := ListOptions{Cursor: cursor, Limit: limit}
+	var entries []AuditTrailEntry
+	info, err := c.doList(ctx, "GET", base+"?"+opts.query(), nil, &entries)
 	if err != nil {
 		return nil, "", err
 	}
-	var envelope struct {
-		Data       []AuditTrailEntry `json:"data"`
-		NextCursor string            `json:"next_cursor"`
-	}
-	if err := json.Unmarshal(respBody, &envelope); err != nil {
-		return nil, "", fmt.Errorf("parsing audit trail response: %w", err)
-	}
-	return envelope.Data, envelope.NextCursor, nil
+	return entries, info.NextCursor, nil
 }
