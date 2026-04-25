@@ -60,6 +60,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -135,14 +136,40 @@ type Client struct {
 	organizationID string
 	orgResolveOnce *sync.Once
 	orgResolveErr  error
+	// eagerResolve / eagerResolveCtx track WithEagerOrgResolve. The
+	// actual resolution happens at the end of NewClient so options
+	// can be applied in any order before the network call fires.
+	eagerResolve    bool
+	eagerResolveCtx context.Context
 }
 
 // Option configures a Client.
 type Option func(*Client)
 
 // WithAPIKey sets the API key (Bearer token) for authentication.
+//
+// Spork API keys carry a fixed `sk_` prefix. WithAPIKey accepts any
+// string for backwards compatibility (bare-token tests, custom proxies,
+// etc.) but a leading whitespace or quote character almost always
+// signals an env-var paste accident — those are stripped here so a
+// `SPORK_API_KEY="\"sk_…\""` mistake doesn't generate confusing 401s
+// downstream. Detailed validation is the server's job; the SDK only
+// trims hostile-looking surroundings.
 func WithAPIKey(key string) Option {
-	return func(c *Client) { c.token = key }
+	return func(c *Client) {
+		// Drop surrounding whitespace and a single layer of matching
+		// quotes — the two leading sources of misconfiguration in
+		// the wild. Don't reject empty strings: the existing
+		// behaviour returns a clear 401 from the server.
+		key = strings.TrimSpace(key)
+		if len(key) >= 2 {
+			first, last := key[0], key[len(key)-1]
+			if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+				key = key[1 : len(key)-1]
+			}
+		}
+		c.token = key
+	}
 }
 
 // WithBaseURL overrides the default API base URL.
@@ -156,19 +183,36 @@ func WithBaseURL(u string) Option {
 // /orgs/{orgID}/... in the REST surface.
 //
 // When the option is not set, the SDK lazily resolves the org on the
-// first org-scoped call by issuing a single GET /users/me/orgs and
-// using the first organization in the response. That works
-// transparently for API-key callers — keys are bound to one org so
-// the listing returns exactly one record. Firebase-authenticated
-// callers who belong to several orgs should pick one explicitly with
-// WithOrganization or via SetOrganization rather than relying on the
-// auto-resolved choice.
+// first org-scoped call by issuing a single GET /users/me/orgs. The
+// resolver expects exactly one membership in the response — API keys
+// are bound to one org so this is the common case. Firebase callers
+// who belong to multiple orgs MUST pick one explicitly via
+// WithOrganization (preferred) or per-call via Client.ForOrg, or the
+// resolver will return an error listing the candidate IDs rather
+// than picking arbitrarily.
 //
-// Status-page and incident endpoints are NOT org-scoped in the URL
-// (they live at /v1/status-pages/... and /v1/incidents/...) and do
-// not require this option to function.
+// Status-page and incident endpoints under /v1/status-pages/... and
+// /v1/incidents/... are also nested under /orgs/{orgID}/ post the
+// 2026-04 multi-org refactor, so they require this option too.
 func WithOrganization(orgID string) Option {
 	return func(c *Client) { c.organizationID = orgID }
+}
+
+// WithEagerOrgResolve forces the lazy /users/me/orgs lookup to run at
+// NewClient time instead of on the first org-scoped call. Failure
+// modes that would normally surface as an error from the first
+// monitor / alert-channel / etc. call surface from NewClient instead,
+// which is friendlier for tools that wrap each request in a tight
+// deadline (Terraform providers especially).
+//
+// No-op when WithOrganization is supplied — there is nothing to
+// resolve. Uses ctx for the resolve request; pass a context with a
+// reasonable timeout so a hung backend doesn't stall startup.
+func WithEagerOrgResolve(ctx context.Context) Option {
+	return func(c *Client) {
+		c.eagerResolveCtx = ctx
+		c.eagerResolve = true
+	}
 }
 
 // WithHTTPClient sets a custom http.Client.
@@ -255,7 +299,27 @@ func NewClient(opts ...Option) *Client {
 			CheckRedirect: c.httpClient.CheckRedirect,
 		}
 	}
+	// WithEagerOrgResolve fires the lazy /users/me/orgs lookup right
+	// now so any failure (zero memberships, ambiguous multi-org,
+	// network) surfaces from the next OrganizationID-or-org-scoped
+	// call rather than from the caller's first business operation.
+	// We deliberately swallow the error here — the resolver caches
+	// it, so the very next call sees it. NewClient stays
+	// (*Client) for backwards compatibility.
+	if c.eagerResolve && c.organizationID == "" {
+		_, _ = c.OrganizationID(c.eagerResolveCtx)
+	}
 	return c
+}
+
+// Resolve eagerly populates the active organization ID by calling
+// /users/me/orgs (no-op when WithOrganization was supplied). Returns
+// the resolved error so callers wrapping NewClient can fail fast on
+// boot without waiting for the first business call. Subsequent
+// OrganizationID-or-org-scoped calls reuse the cached result.
+func (c *Client) Resolve(ctx context.Context) error {
+	_, err := c.OrganizationID(ctx)
+	return err
 }
 
 // LastRateLimit returns the most recent rate-limit snapshot observed from
@@ -275,6 +339,17 @@ func (c *Client) Token() string {
 // BaseURL returns the configured base URL.
 func (c *Client) BaseURL() string {
 	return c.baseURL
+}
+
+// ConfiguredOrganizationID returns the organization ID without
+// triggering the lazy /users/me/orgs lookup. Returns "" when neither
+// WithOrganization nor a previous resolve has set it. Use this when
+// you only want to read the current setting — for example, deciding
+// whether to display "(auto)" vs the explicit ID in a CLI prompt.
+func (c *Client) ConfiguredOrganizationID() string {
+	c.orgMu.Lock()
+	defer c.orgMu.Unlock()
+	return c.organizationID
 }
 
 // OrganizationID returns the organization ID the client is scoped to,
@@ -317,6 +392,24 @@ func (c *Client) OrganizationID(ctx context.Context) (string, error) {
 			c.orgResolveErr = fmt.Errorf("auto-resolving organization: caller has no organization memberships; create one with CreateOrganization")
 			return
 		}
+		// Refuse to silently pick when the caller belongs to multiple
+		// orgs — every non-explicit choice will be wrong half the
+		// time and the symptom (data from the wrong org) is hard to
+		// diagnose. Force the caller to be intentional via
+		// WithOrganization, ForOrg, or SetOrganization.
+		// API-key callers always see a single-element list (keys bind
+		// to one org), so this branch is only ever hit by Firebase-
+		// authenticated tools.
+		if len(orgs) > 1 {
+			ids := make([]string, 0, len(orgs))
+			for _, o := range orgs {
+				ids = append(ids, o.ID)
+			}
+			c.orgResolveErr = fmt.Errorf(
+				"auto-resolving organization: caller belongs to %d orgs (%s); pick one explicitly with spork.WithOrganization, client.ForOrg, or client.SetOrganization",
+				len(orgs), strings.Join(ids, ", "))
+			return
+		}
 		c.organizationID = orgs[0].ID
 	})
 
@@ -337,12 +430,45 @@ func (c *Client) OrganizationID(ctx context.Context) (string, error) {
 // Holds orgMu to keep the swap atomic against an in-flight
 // OrganizationID resolution; an in-flight Do that lands after the
 // swap is discarded by the matching-Once check above.
+//
+// SetOrganization mutates the receiver — concurrent goroutines that
+// already started an org-scoped call may race on the org ID. Prefer
+// ForOrg for per-call switching against shared clients.
 func (c *Client) SetOrganization(orgID string) {
 	c.orgMu.Lock()
 	defer c.orgMu.Unlock()
 	c.organizationID = orgID
 	c.orgResolveOnce = &sync.Once{}
 	c.orgResolveErr = nil
+}
+
+// ForOrg returns a shallow-copied client scoped to the supplied
+// organization ID. Use this for per-call tenant switching against a
+// shared client — the receiver is unchanged, so concurrent goroutines
+// targeting different orgs cannot race on the active org.
+//
+//	monsA, _ := client.ForOrg("org_acme").ListMonitors(ctx)
+//	monsB, _ := client.ForOrg("org_beta").ListMonitors(ctx)
+//
+// The Stripe-Connect equivalent is `&stripe.RequestParams{StripeAccount}`
+// per call. Spork's URL is path-scoped so we shallow-copy the client
+// rather than threading the org through every method signature, but
+// the use case is the same: a multi-tenant tool (CLI listing every
+// customer's monitors, Terraform provider with provider aliases, MSP
+// dashboard) can target many orgs without owning N long-lived
+// clients.
+//
+// Internals: rate-limit snapshot, transport middleware, retry policy,
+// and the underlying http.Client are all shared. Auto-resolution
+// state is reset on the copy — `orgID` is treated as an explicit
+// override, so the new client never hits /users/me/orgs.
+func (c *Client) ForOrg(orgID string) *Client {
+	dup := *c
+	dup.orgMu = sync.Mutex{}
+	dup.organizationID = orgID
+	dup.orgResolveOnce = &sync.Once{}
+	dup.orgResolveErr = nil
+	return &dup
 }
 
 // orgPath prepends /orgs/{orgID} to suffix, resolving the org ID if

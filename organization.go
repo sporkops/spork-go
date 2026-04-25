@@ -96,9 +96,31 @@ func (c *Client) ListMyOrgs(ctx context.Context) ([]OrgSummary, error) {
 
 // CreateOrganizationInput is the request body for CreateOrganization.
 type CreateOrganizationInput struct {
-	// Name is an optional human-readable label. If empty, the server
-	// picks a default (e.g. "Acme's Org").
+	// Name is an optional free-form display name.
 	Name string `json:"name,omitempty"`
+	// Slug is an optional URL-friendly identifier (3-63 lowercase
+	// alphanumeric/hyphens, starting and ending with an alphanumeric).
+	// When set, the slug becomes the org's stored `name` so future
+	// dashboard URLs are predictable. Server picks a random
+	// `team-xxxxxxxx` slug when both Slug and Name are empty.
+	// Mutually exclusive with Name — passing both returns 400.
+	Slug string `json:"slug,omitempty"`
+}
+
+// UpdateOrganizationInput is the request body for UpdateOrganization.
+type UpdateOrganizationInput struct {
+	// Name is the new display name. Required, capped at 100 chars,
+	// must not contain control characters. Empty string returns 400.
+	Name string `json:"name"`
+}
+
+// DeleteOrganizationInput is the request body for DeleteOrganization.
+// `Confirm` must equal the org ID being deleted; the server rejects
+// any other value with 400 confirmation_required so a misrouted
+// scripted DELETE in a multi-org pipeline cannot silently nuke the
+// wrong tenant.
+type DeleteOrganizationInput struct {
+	Confirm string `json:"confirm"`
 }
 
 // CreateOrganization creates a new organization on the free plan; the
@@ -122,6 +144,64 @@ func (c *Client) CreateOrganization(ctx context.Context, input *CreateOrganizati
 	}
 	var result OrgSummary
 	if err := c.doSingle(ctx, "POST", "/orgs", input, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// UpdateOrganization renames the active organization. Owner-only on
+// the server side. Returns the refreshed Organization so callers can
+// update local state without a follow-up GetOrganization round-trip.
+func (c *Client) UpdateOrganization(ctx context.Context, input *UpdateOrganizationInput) (*Organization, error) {
+	if input == nil {
+		input = &UpdateOrganizationInput{}
+	}
+	path, err := c.orgPath(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	var result Organization
+	if err := c.doSingle(ctx, "PATCH", path, input, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DeleteOrganization permanently removes the active organization.
+// Owner-only. The body's `confirm` field must equal the orgID — the
+// helper fills it in for you using the configured / resolved org.
+//
+// Cannot be undone. Server rejects with 409 active_subscription if
+// the org still has a paid subscription that hasn't been cancelled
+// in the billing portal.
+//
+// After a successful DELETE the client's cached org ID is now stale.
+// Call SetOrganization (or ForOrg) before issuing further org-scoped
+// requests, otherwise every subsequent call hits a 404 / 403 for
+// the deleted tenant.
+func (c *Client) DeleteOrganization(ctx context.Context) error {
+	orgID, err := c.OrganizationID(ctx)
+	if err != nil {
+		return err
+	}
+	path, err := c.orgPath(ctx, "")
+	if err != nil {
+		return err
+	}
+	return c.doNoContent(ctx, "DELETE", path, &DeleteOrganizationInput{Confirm: orgID})
+}
+
+// GetMyMembership returns the caller's Member record in the active
+// organization — the canonical "what's my role here?" lookup. Works
+// for any authenticated member regardless of role; saves the
+// /orgs/{orgID} round-trip when callers only need their own role.
+func (c *Client) GetMyMembership(ctx context.Context) (*Member, error) {
+	path, err := c.orgPath(ctx, "/members/me")
+	if err != nil {
+		return nil, err
+	}
+	var result Member
+	if err := c.doSingle(ctx, "GET", path, nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

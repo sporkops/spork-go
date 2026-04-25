@@ -166,3 +166,47 @@ func parseSignatureHeader(h string) (int64, []string, error) {
 	}
 	return timestamp, sigs, nil
 }
+
+// WebhookPayload mirrors the JSON body Spork POSTs to webhook alert
+// channels. Receivers can decode the request body directly into this
+// type after VerifyWebhookRequest signs off on authenticity:
+//
+//	body, _ := io.ReadAll(r.Body)
+//	if _, err := spork.VerifyWebhookRequest(r, body, secret); err != nil {
+//	    http.Error(w, err.Error(), http.StatusUnauthorized)
+//	    return
+//	}
+//	var payload spork.WebhookPayload
+//	if err := json.Unmarshal(body, &payload); err != nil { ... }
+//	switch payload.Event { ... }
+//
+// OrganizationID is critical for multi-tenant integrations (MSPs,
+// agencies) that subscribe one endpoint to webhooks from many Spork
+// orgs — without it there's no way to know which tenant fired the
+// delivery.
+type WebhookPayload struct {
+	// Event is "monitor.down" or "monitor.up".
+	Event string `json:"event"`
+	// OrganizationID is the ID of the org that owns the monitor.
+	OrganizationID string `json:"organization_id"`
+	// Monitor is the monitor's display name.
+	Monitor string `json:"monitor"`
+	// MonitorID is the monitor's stable ID.
+	MonitorID string `json:"monitor_id"`
+	// URL is the monitored URL or hostname.
+	URL string `json:"url"`
+	// Status is the incident status — typically "triggered" for
+	// monitor.down, "resolved" for monitor.up.
+	Status string `json:"status"`
+	// Message is a human-readable incident description.
+	Message string `json:"message"`
+	// Timestamp is the RFC3339 / ISO 8601 event time in UTC.
+	Timestamp string `json:"timestamp"`
+	// IncidentID is the originating incident's stable ID.
+	IncidentID string `json:"incident_id"`
+	// Test is true only on synthetic deliveries fired by `POST
+	// /webhooks/trigger`. Real incident deliveries omit the field.
+	// Receivers can branch on this to route test events to a staging
+	// handler without sniffing the monitor name.
+	Test bool `json:"test,omitempty"`
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -200,5 +201,126 @@ func TestOrganizationID_ConcurrentCallersResolveOnce(t *testing.T) {
 	}
 	if got := hits.Load(); got != 1 {
 		t.Errorf("expected exactly 1 /users/me/orgs hit under contention, got %d", got)
+	}
+}
+
+// --- Multi-org admin / per-call tenant switching ---
+
+func TestForOrg_DoesNotMutateReceiver(t *testing.T) {
+	c := NewClient(WithAPIKey("sk_test"), WithOrganization("org_origin"))
+	scoped := c.ForOrg("org_other")
+	if got := c.ConfiguredOrganizationID(); got != "org_origin" {
+		t.Errorf("receiver mutated: ConfiguredOrganizationID = %q, want org_origin", got)
+	}
+	if got := scoped.ConfiguredOrganizationID(); got != "org_other" {
+		t.Errorf("scoped client wrong org: ConfiguredOrganizationID = %q, want org_other", got)
+	}
+}
+
+func TestForOrg_RoutesPerCallTraffic(t *testing.T) {
+	var seenPaths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPaths = append(seenPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []Monitor{},
+			"meta": map[string]any{"has_more": false},
+		})
+	}))
+	defer srv.Close()
+	c := NewClient(WithAPIKey("sk_test"), WithBaseURL(srv.URL), WithOrganization("org_alpha"))
+
+	if _, err := c.ForOrg("org_beta").ListMonitors(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ForOrg("org_gamma").ListMonitors(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/orgs/org_beta/monitors", "/orgs/org_gamma/monitors"}
+	if len(seenPaths) != len(want) {
+		t.Fatalf("paths = %v, want %v", seenPaths, want)
+	}
+	for i := range want {
+		if seenPaths[i] != want[i] {
+			t.Errorf("paths[%d] = %q, want %q", i, seenPaths[i], want[i])
+		}
+	}
+}
+
+// --- Loud-fail ambiguous auto-resolve ---
+
+func TestOrganizationID_AmbiguousMultiMembershipErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []OrgSummary{
+				{ID: "org_a", Role: "owner"},
+				{ID: "org_b", Role: "member"},
+			},
+			"meta": map[string]any{"has_more": false},
+		})
+	}))
+	defer srv.Close()
+	c := NewClient(WithAPIKey("sk_test"), WithBaseURL(srv.URL))
+
+	_, err := c.OrganizationID(context.Background())
+	if err == nil {
+		t.Fatal("expected error for >1 memberships")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "org_a") || !strings.Contains(msg, "org_b") {
+		t.Errorf("expected error to list candidate orgs, got: %v", err)
+	}
+	if !strings.Contains(msg, "ForOrg") && !strings.Contains(msg, "WithOrganization") {
+		t.Errorf("expected error to point at ForOrg/WithOrganization, got: %v", err)
+	}
+}
+
+// --- WithEagerOrgResolve ---
+
+func TestWithEagerOrgResolve_ResolvesAtConstruction(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []OrgSummary{{ID: "org_eager", Role: "owner"}},
+			"meta": map[string]any{"has_more": false},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(WithAPIKey("sk_test"), WithBaseURL(srv.URL), WithEagerOrgResolve(context.Background()))
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Errorf("expected eager resolve to hit /users/me/orgs once at NewClient time, got %d hits", got)
+	}
+	if got := c.ConfiguredOrganizationID(); got != "org_eager" {
+		t.Errorf("ConfiguredOrganizationID = %q, want org_eager", got)
+	}
+}
+
+// --- WithAPIKey trims hostile surroundings ---
+
+func TestWithAPIKey_TrimsWhitespaceAndQuotes(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "sk_live_abc", "sk_live_abc"},
+		{"surrounding whitespace", "  sk_live_abc \n", "sk_live_abc"},
+		{"double-quoted", `"sk_live_abc"`, "sk_live_abc"},
+		{"single-quoted", `'sk_live_abc'`, "sk_live_abc"},
+		{"whitespace + quotes", `  "sk_live_abc"  `, "sk_live_abc"},
+		{"mismatched quotes left alone", `"sk_live_abc'`, `"sk_live_abc'`},
+		{"empty stays empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewClient(WithAPIKey(tc.in))
+			if c.Token() != tc.want {
+				t.Errorf("Token() = %q, want %q", c.Token(), tc.want)
+			}
+		})
 	}
 }
