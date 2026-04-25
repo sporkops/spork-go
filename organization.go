@@ -102,12 +102,16 @@ type CreateOrganizationInput struct {
 }
 
 // CreateOrganization creates a new organization on the free plan; the
-// caller becomes the owner. Each user is capped at a small number of
-// free organizations they own (default 3); paid orgs are uncapped.
+// caller becomes the owner.
+//
+// Gated by the per-user organization cap. Free / Starter / Pro plans
+// each grant one slot; Agency grants five — i.e., a user can only own
+// multiple orgs once at least one of them is on the Agency plan. The
+// server returns 403 `org_limit_reached` when the cap is hit. Support
+// can raise the cap per-user via the `org_limit` entitlement.
 //
 // Cannot be called with an API key — keys are bound to their home org
-// and cannot create new tenants. The server returns 403
-// `free_org_limit_reached` if the cap is hit.
+// and cannot create new tenants.
 //
 // The returned OrgSummary is suitable to pass to SetOrganization to
 // switch the client onto the freshly-created tenant for subsequent

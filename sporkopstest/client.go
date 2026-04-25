@@ -183,6 +183,28 @@ func (f *FakeServer) route(w http.ResponseWriter, r *http.Request) {
 		writeList(w, []spork.OrgSummary{{ID: "org_fake", Name: "Fake Org", Role: "owner"}}, r)
 	case r.URL.Path == "/users/me" && r.Method == http.MethodGet:
 		writeData(w, http.StatusOK, spork.User{UID: "uid_fake", Email: "fake@example.com"})
+	case r.URL.Path == "/" && r.Method == http.MethodGet:
+		// GET /orgs/{orgID} — org root. The strip-prefix branch above
+		// rewrote the org-scoped path to "/" so we route on it here.
+		writeData(w, http.StatusOK, spork.Organization{
+			ID:   "org_fake",
+			Name: "Fake Org",
+			Subscriptions: []spork.Subscription{{
+				Product: "monitoring",
+				Plan:    "free",
+			}},
+			User: &spork.OrganizationUser{UID: "uid_fake", Email: "fake@example.com", Role: "owner"},
+		})
+	case r.URL.Path == "/usage" && r.Method == http.MethodGet:
+		// GET /orgs/{orgID}/usage. Empty subscription list is the
+		// minimum the schema permits; tests that need realistic
+		// numbers can register a custom Handle("GET", "/usage", ...).
+		writeData(w, http.StatusOK, spork.OrganizationUsage{Subscriptions: []spork.SubscriptionUsage{}})
+	case r.URL.Path == "/export" && r.Method == http.MethodGet:
+		// GET /orgs/{orgID}/export — raw JSON, NOT the data envelope.
+		// Match the production wire shape so callers parse it identically.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"exported_at":"2026-04-25T00:00:00Z","monitors":[],"alert_channels":[],"incidents":[],"api_keys":[],"members":[],"delivery_logs":[]}`))
 	case strings.HasPrefix(r.URL.Path, "/monitors"):
 		f.handleMonitors(w, r)
 	case strings.HasPrefix(r.URL.Path, "/alert-channels"):

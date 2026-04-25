@@ -115,19 +115,25 @@ type HTTPMiddleware func(http.RoundTripper) http.RoundTripper
 
 // Client is an HTTP client for the Spork API.
 type Client struct {
-	baseURL        string
-	token          string
-	httpClient     *http.Client
-	userAgent      string
-	retryPolicy    RetryPolicy
-	logger         Logger
-	rateLimit      rateLimitStore
-	middleware     []HTTPMiddleware
+	baseURL     string
+	token       string
+	httpClient  *http.Client
+	userAgent   string
+	retryPolicy RetryPolicy
+	logger      Logger
+	rateLimit   rateLimitStore
+	middleware  []HTTPMiddleware
+
+	// orgMu guards organizationID, orgResolveOnce, and orgResolveErr
+	// so concurrent callers (e.g. parallel Terraform resource ops) can
+	// safely read the cached value while another goroutine resolves it
+	// or SetOrganization swaps it out. Without the lock, the early
+	// "is it already set?" read in OrganizationID would race with the
+	// write inside Once.Do, and SetOrganization re-assigning
+	// orgResolveOnce mid-flight would be undefined behaviour.
+	orgMu          sync.Mutex
 	organizationID string
-	// orgResolveOnce guards lazy resolution via /users/me/orgs when no
-	// explicit organization ID was provided. The first org-scoped call
-	// performs the lookup; subsequent calls reuse the cached value.
-	orgResolveOnce sync.Once
+	orgResolveOnce *sync.Once
 	orgResolveErr  error
 }
 
@@ -208,10 +214,11 @@ func WithHTTPMiddleware(mw HTTPMiddleware) Option {
 // NewClient creates a new Spork API client.
 func NewClient(opts ...Option) *Client {
 	c := &Client{
-		baseURL:     DefaultBaseURL,
-		userAgent:   "spork-go-sdk/" + Version,
-		retryPolicy: DefaultRetryPolicy,
-		logger:      nopLogger{},
+		baseURL:        DefaultBaseURL,
+		userAgent:      "spork-go-sdk/" + Version,
+		retryPolicy:    DefaultRetryPolicy,
+		logger:         nopLogger{},
+		orgResolveOnce: &sync.Once{},
 	}
 	for _, o := range opts {
 		o(c)
@@ -273,14 +280,35 @@ func (c *Client) BaseURL() string {
 // OrganizationID returns the organization ID the client is scoped to,
 // resolving it once via /users/me/orgs if WithOrganization was not
 // supplied. The first call may issue a network request; subsequent
-// calls return the cached value (or cached error). Callers who have
-// already authenticated and just want the ID can use this directly.
+// calls return the cached value (or cached error).
+//
+// The fast-path read and the lazy resolution share orgMu so concurrent
+// callers (e.g. parallel Terraform resource ops) cannot race on the
+// cached value or trigger two simultaneous /users/me/orgs lookups. The
+// lock is released across the network call by snapshotting the
+// resolver Once locally — Once.Do still serialises competing
+// resolvers without holding the mutex during I/O.
 func (c *Client) OrganizationID(ctx context.Context) (string, error) {
-	if c.organizationID != "" {
-		return c.organizationID, nil
+	c.orgMu.Lock()
+	if id := c.organizationID; id != "" {
+		c.orgMu.Unlock()
+		return id, nil
 	}
-	c.orgResolveOnce.Do(func() {
+	resolveOnce := c.orgResolveOnce
+	c.orgMu.Unlock()
+
+	resolveOnce.Do(func() {
 		orgs, err := c.ListMyOrgs(ctx)
+		c.orgMu.Lock()
+		defer c.orgMu.Unlock()
+		// SetOrganization may have replaced orgResolveOnce while we
+		// were on the wire; in that case the result of this Do is
+		// stale and must be discarded. Match the snapshot we took
+		// before the call and only commit when it still owns the
+		// resolver slot.
+		if c.orgResolveOnce != resolveOnce {
+			return
+		}
 		if err != nil {
 			c.orgResolveErr = fmt.Errorf("auto-resolving organization: %w", err)
 			return
@@ -291,6 +319,9 @@ func (c *Client) OrganizationID(ctx context.Context) (string, error) {
 		}
 		c.organizationID = orgs[0].ID
 	})
+
+	c.orgMu.Lock()
+	defer c.orgMu.Unlock()
 	if c.orgResolveErr != nil {
 		return "", c.orgResolveErr
 	}
@@ -300,11 +331,17 @@ func (c *Client) OrganizationID(ctx context.Context) (string, error) {
 // SetOrganization overrides the active organization ID. Useful when a
 // caller wants to switch tenants on a long-lived client (e.g. a CLI
 // command that lists every org and runs the same query against each).
-// Calling SetOrganization after auto-resolution clears the resolution
-// state so the new value is used on the next call.
+//
+// Calling SetOrganization after auto-resolution clears the cached
+// resolver Once / error so the next call observes the new value.
+// Holds orgMu to keep the swap atomic against an in-flight
+// OrganizationID resolution; an in-flight Do that lands after the
+// swap is discarded by the matching-Once check above.
 func (c *Client) SetOrganization(orgID string) {
+	c.orgMu.Lock()
+	defer c.orgMu.Unlock()
 	c.organizationID = orgID
-	c.orgResolveOnce = sync.Once{}
+	c.orgResolveOnce = &sync.Once{}
 	c.orgResolveErr = nil
 }
 
