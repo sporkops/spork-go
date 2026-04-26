@@ -425,6 +425,27 @@ type EmailSubscriber struct {
 	ConfirmedAt  string `json:"confirmed_at,omitempty"`
 }
 
+// User is the account-level identity for the authenticated principal.
+// Returned by GetMe. Org-specific data lives on OrgSummary.
+type User struct {
+	UID       string    `json:"uid"`
+	Email     string    `json:"email"`
+	AdminRole string    `json:"admin_role,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// OrgSummary is the compact organization record returned by ListMyOrgs
+// and CreateOrganization. Use GetOrganization for the full Organization
+// record (including the user.uid/email block).
+type OrgSummary struct {
+	ID            string         `json:"id"`
+	Name          string         `json:"name,omitempty"`
+	Role          string         `json:"role"` // "owner" or "member" — the caller's role in this org
+	Subscriptions []Subscription `json:"subscriptions"`
+	CreatedAt     time.Time      `json:"created_at"`
+}
+
 // AcceptInviteInput is the request body for accepting an organization invite.
 type AcceptInviteInput struct {
 	Token string `json:"token"`

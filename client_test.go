@@ -16,9 +16,14 @@ func testServer(t *testing.T, handler http.HandlerFunc) (*Client, *httptest.Serv
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
+	// Pre-configure WithOrganization so org-scoped methods don't trigger
+	// the lazy /users/me/orgs auto-resolve handshake against the test
+	// server. Tests that want to exercise the auto-resolver should call
+	// NewClient directly without WithOrganization.
 	c := NewClient(
 		WithAPIKey("sk_test_key"),
 		WithBaseURL(srv.URL),
+		WithOrganization("org_test"),
 	)
 	return c, srv
 }
@@ -63,8 +68,8 @@ func TestCreateMonitor(t *testing.T) {
 		if r.Method != "POST" {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if r.URL.Path != "/monitors" {
-			t.Errorf("path = %s, want /monitors", r.URL.Path)
+		if r.URL.Path != "/orgs/org_test/monitors" {
+			t.Errorf("path = %s, want /orgs/org_test/monitors", r.URL.Path)
 		}
 		if auth := r.Header.Get("Authorization"); auth != "Bearer sk_test_key" {
 			t.Errorf("auth = %q", auth)
@@ -132,7 +137,7 @@ func TestListMonitors(t *testing.T) {
 
 func TestGetMonitor(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/monitors/mon_123" {
+		if r.URL.Path != "/orgs/org_test/monitors/mon_123" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -314,7 +319,7 @@ func TestContextCancellation(t *testing.T) {
 
 func TestCreateAlertChannel(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/alert-channels" {
+		if r.Method != "POST" || r.URL.Path != "/orgs/org_test/alert-channels" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -339,7 +344,7 @@ func TestCreateAlertChannel(t *testing.T) {
 
 func TestCreateStatusPage(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/status-pages" {
+		if r.Method != "POST" || r.URL.Path != "/orgs/org_test/status-pages" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -363,7 +368,7 @@ func TestCreateStatusPage(t *testing.T) {
 
 func TestCreateIncident(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/status-pages/sp_1/incidents" {
+		if r.URL.Path != "/orgs/org_test/status-pages/sp_1/incidents" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -389,8 +394,8 @@ func TestListRecentIncidents(t *testing.T) {
 		if r.Method != "GET" {
 			t.Errorf("method = %s, want GET", r.Method)
 		}
-		if r.URL.Path != "/incidents" {
-			t.Errorf("path = %s, want /incidents", r.URL.Path)
+		if r.URL.Path != "/orgs/org_test/incidents" {
+			t.Errorf("path = %s, want /orgs/org_test/incidents", r.URL.Path)
 		}
 		if got := r.URL.Query().Get("limit"); got != "25" {
 			t.Errorf("limit = %q, want 25", got)
@@ -432,7 +437,7 @@ func TestListRecentIncidents_OmitsLimitWhenZero(t *testing.T) {
 
 func TestCreateAPIKey(t *testing.T) {
 	client, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/api-keys" {
+		if r.Method != "POST" || r.URL.Path != "/orgs/org_test/api-keys" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")

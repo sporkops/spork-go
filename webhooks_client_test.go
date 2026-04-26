@@ -11,7 +11,7 @@ import (
 func TestTriggerWebhook_WireShapeAndResponseDecode(t *testing.T) {
 	var gotBody TriggerWebhookInput
 	c, _ := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/webhooks/trigger" {
+		if r.Method != "POST" || r.URL.Path != "/orgs/org_test/webhooks/trigger" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {

@@ -143,6 +143,27 @@ func (f *FakeServer) nextID(prefix string) string {
 }
 
 func (f *FakeServer) route(w http.ResponseWriter, r *http.Request) {
+	// Strip the /orgs/{orgID}/ prefix the SDK adds for org-scoped calls
+	// before dispatching to the per-resource handlers. The fake doesn't
+	// model multiple orgs — every caller sees the same in-memory store —
+	// so we accept any orgID and rewrite once here. Custom handlers
+	// register against the unprefixed path so they keep working when
+	// the SDK switches between flat and org-nested URLs.
+	path := r.URL.Path
+	if strings.HasPrefix(path, "/orgs/") {
+		rest := strings.TrimPrefix(path, "/orgs/")
+		if slash := strings.Index(rest, "/"); slash > 0 {
+			path = rest[slash:]
+		} else {
+			path = "/"
+		}
+		r2 := *r
+		u2 := *r.URL
+		u2.Path = path
+		r2.URL = &u2
+		r = &r2
+	}
+
 	f.mu.Lock()
 	if h, ok := f.customHandlers[r.Method+" "+r.URL.Path]; ok {
 		f.mu.Unlock()
@@ -156,6 +177,65 @@ func (f *FakeServer) route(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch {
+	case r.URL.Path == "/users/me/orgs" && r.Method == http.MethodGet:
+		// Single-element list so SDK auto-resolution lands on a stable
+		// org ID without the test having to pre-configure WithOrganization.
+		writeList(w, []spork.OrgSummary{{ID: "org_fake", Name: "Fake Org", Role: "owner"}}, r)
+	case r.URL.Path == "/users/me" && r.Method == http.MethodGet:
+		writeData(w, http.StatusOK, spork.User{UID: "uid_fake", Email: "fake@example.com"})
+	case r.URL.Path == "/" && r.Method == http.MethodGet:
+		// GET /orgs/{orgID} — org root. The strip-prefix branch above
+		// rewrote the org-scoped path to "/" so we route on it here.
+		writeData(w, http.StatusOK, spork.Organization{
+			ID:   "org_fake",
+			Name: "Fake Org",
+			Subscriptions: []spork.Subscription{{
+				Product: "monitoring",
+				Plan:    "free",
+			}},
+			User: &spork.OrganizationUser{UID: "uid_fake", Email: "fake@example.com", Role: "owner"},
+		})
+	case r.URL.Path == "/" && r.Method == http.MethodPatch:
+		// PATCH /orgs/{orgID} — accept any body and echo back a renamed
+		// org. Tests that need to pin the request body should register
+		// a custom Handle.
+		var body struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Name == "" {
+			body.Name = "Fake Org"
+		}
+		writeData(w, http.StatusOK, spork.Organization{
+			ID: "org_fake", Name: body.Name,
+			Subscriptions: []spork.Subscription{{Product: "monitoring", Plan: "free"}},
+			User:          &spork.OrganizationUser{UID: "uid_fake", Email: "fake@example.com", Role: "owner"},
+		})
+	case r.URL.Path == "/" && r.Method == http.MethodDelete:
+		// DELETE /orgs/{orgID} — accept the confirm token and 204.
+		w.WriteHeader(http.StatusNoContent)
+	case r.URL.Path == "/members/me" && r.Method == http.MethodGet:
+		// Caller's Member record. Synthesised against the same fake
+		// identity used by /users/me so tests reading "what's my role"
+		// don't have to seed a Member by hand.
+		writeData(w, http.StatusOK, spork.Member{
+			ID:             "uid_fake",
+			OrganizationID: "org_fake",
+			UserID:         "uid_fake",
+			Email:          "fake@example.com",
+			Role:           "owner",
+			Status:         "accepted",
+		})
+	case r.URL.Path == "/usage" && r.Method == http.MethodGet:
+		// GET /orgs/{orgID}/usage. Empty subscription list is the
+		// minimum the schema permits; tests that need realistic
+		// numbers can register a custom Handle("GET", "/usage", ...).
+		writeData(w, http.StatusOK, spork.OrganizationUsage{Subscriptions: []spork.SubscriptionUsage{}})
+	case r.URL.Path == "/export" && r.Method == http.MethodGet:
+		// GET /orgs/{orgID}/export — raw JSON, NOT the data envelope.
+		// Match the production wire shape so callers parse it identically.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"exported_at":"2026-04-25T00:00:00Z","monitors":[],"alert_channels":[],"incidents":[],"api_keys":[],"members":[],"delivery_logs":[]}`))
 	case strings.HasPrefix(r.URL.Path, "/monitors"):
 		f.handleMonitors(w, r)
 	case strings.HasPrefix(r.URL.Path, "/alert-channels"):

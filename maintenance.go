@@ -7,8 +7,12 @@ import (
 
 // CreateMaintenanceWindow creates a new maintenance window.
 func (c *Client) CreateMaintenanceWindow(ctx context.Context, w *MaintenanceWindow) (*MaintenanceWindow, error) {
+	path, err := c.orgPath(ctx, "/maintenance-windows")
+	if err != nil {
+		return nil, err
+	}
 	var result MaintenanceWindow
-	if err := c.doSingle(ctx, "POST", "/maintenance-windows", w, &result); err != nil {
+	if err := c.doSingle(ctx, "POST", path, w, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -25,9 +29,12 @@ func (c *Client) ListMaintenanceWindows(ctx context.Context) ([]MaintenanceWindo
 // ListMaintenanceWindowsWithOptions returns a single page of windows along with
 // pagination metadata. Use ListMaintenanceWindows for every record.
 func (c *Client) ListMaintenanceWindowsWithOptions(ctx context.Context, opts ListOptions) ([]MaintenanceWindow, PageMeta, error) {
+	base, err := c.orgPath(ctx, "/maintenance-windows")
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
 	var result []MaintenanceWindow
-	path := "/maintenance-windows?" + opts.query()
-	meta, err := c.doList(ctx, "GET", path, nil, &result)
+	meta, err := c.doList(ctx, "GET", base+"?"+opts.query(), nil, &result)
 	if err != nil {
 		return nil, PageMeta{}, err
 	}
@@ -36,8 +43,12 @@ func (c *Client) ListMaintenanceWindowsWithOptions(ctx context.Context, opts Lis
 
 // GetMaintenanceWindow returns a single maintenance window by ID.
 func (c *Client) GetMaintenanceWindow(ctx context.Context, id string) (*MaintenanceWindow, error) {
+	path, err := c.orgPath(ctx, "/maintenance-windows/"+url.PathEscape(id))
+	if err != nil {
+		return nil, err
+	}
 	var result MaintenanceWindow
-	if err := c.doSingle(ctx, "GET", "/maintenance-windows/"+url.PathEscape(id), nil, &result); err != nil {
+	if err := c.doSingle(ctx, "GET", path, nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -46,8 +57,12 @@ func (c *Client) GetMaintenanceWindow(ctx context.Context, id string) (*Maintena
 // UpdateMaintenanceWindow partially updates a window by ID using HTTP PATCH.
 // Only non-zero fields on w are applied. Matches UpdateMonitor semantics.
 func (c *Client) UpdateMaintenanceWindow(ctx context.Context, id string, w *MaintenanceWindow) (*MaintenanceWindow, error) {
+	path, err := c.orgPath(ctx, "/maintenance-windows/"+url.PathEscape(id))
+	if err != nil {
+		return nil, err
+	}
 	var result MaintenanceWindow
-	if err := c.doSingle(ctx, "PATCH", "/maintenance-windows/"+url.PathEscape(id), w, &result); err != nil {
+	if err := c.doSingle(ctx, "PATCH", path, w, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -55,15 +70,23 @@ func (c *Client) UpdateMaintenanceWindow(ctx context.Context, id string, w *Main
 
 // DeleteMaintenanceWindow deletes a maintenance window by ID.
 func (c *Client) DeleteMaintenanceWindow(ctx context.Context, id string) error {
-	return c.doNoContent(ctx, "DELETE", "/maintenance-windows/"+url.PathEscape(id), nil)
+	path, err := c.orgPath(ctx, "/maintenance-windows/"+url.PathEscape(id))
+	if err != nil {
+		return err
+	}
+	return c.doNoContent(ctx, "DELETE", path, nil)
 }
 
 // CancelMaintenanceWindow cancels a scheduled or in-progress window. The
 // window stays visible for audit/history but transitions to "cancelled"
 // and is ignored by the alert-suppression and check-pause gates.
 func (c *Client) CancelMaintenanceWindow(ctx context.Context, id string) (*MaintenanceWindow, error) {
+	path, err := c.orgPath(ctx, "/maintenance-windows/"+url.PathEscape(id)+"/cancel")
+	if err != nil {
+		return nil, err
+	}
 	var result MaintenanceWindow
-	if err := c.doSingle(ctx, "POST", "/maintenance-windows/"+url.PathEscape(id)+"/cancel", nil, &result); err != nil {
+	if err := c.doSingle(ctx, "POST", path, nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
