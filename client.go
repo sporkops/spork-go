@@ -59,6 +59,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -260,6 +261,62 @@ func WithHTTPMiddleware(mw HTTPMiddleware) Option {
 	}
 }
 
+// WithEnvDefaults applies sensible defaults from environment variables for
+// the three most-common configuration knobs: API key, organization ID,
+// and base URL. Options passed AFTER this one override the env-derived
+// values, so it composes cleanly:
+//
+//	// Pure env config (twelve-factor):
+//	client := spork.NewClient(spork.WithEnvDefaults())
+//
+//	// Env defaults with an explicit override for one knob:
+//	client := spork.NewClient(
+//	    spork.WithEnvDefaults(),
+//	    spork.WithOrganization("org_acme"),
+//	)
+//
+// The env vars read (in priority order; first non-empty wins):
+//
+//   - API key:        SPORK_API_KEY
+//   - Organization:   SPORK_ORGANIZATION_ID, then SPORK_ORG_ID
+//   - Base URL:       SPORK_BASE_URL
+//
+// Empty / unset variables leave the corresponding field at its current
+// value (the constructor default for fresh clients, or whatever a prior
+// option set). The CLI standardizes on SPORK_ORG_ID and we keep that name
+// supported for compatibility, but new code should prefer the longer
+// SPORK_ORGANIZATION_ID since it matches the API path segment and the
+// json tag on response payloads.
+//
+// We intentionally do NOT auto-read these from inside WithAPIKey /
+// WithOrganization / WithBaseURL — silent env consumption is hard to
+// reason about when a test forgets to clear state. Making the env-vars
+// opt-in via a single, named option keeps the surface explicit.
+func WithEnvDefaults() Option {
+	return func(c *Client) {
+		if v := strings.TrimSpace(os.Getenv("SPORK_API_KEY")); v != "" {
+			// Route through WithAPIKey so the same trim / unquote
+			// hardening applies to env-derived tokens.
+			WithAPIKey(v)(c)
+		}
+		if v := firstNonEmptyEnv("SPORK_ORGANIZATION_ID", "SPORK_ORG_ID"); v != "" {
+			c.organizationID = v
+		}
+		if v := strings.TrimSpace(os.Getenv("SPORK_BASE_URL")); v != "" {
+			c.baseURL = v
+		}
+	}
+}
+
+func firstNonEmptyEnv(names ...string) string {
+	for _, name := range names {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // NewClient creates a new Spork API client.
 func NewClient(opts ...Option) *Client {
 	c := &Client{
@@ -437,9 +494,20 @@ func (c *Client) OrganizationID(ctx context.Context) (string, error) {
 // OrganizationID resolution; an in-flight Do that lands after the
 // swap is discarded by the matching-Once check above.
 //
-// SetOrganization mutates the receiver — concurrent goroutines that
-// already started an org-scoped call may race on the org ID. Prefer
-// ForOrg for per-call switching against shared clients.
+// Deprecated: SetOrganization mutates the receiver in place, which
+// races against any org-scoped call already in flight on this client.
+// Prefer one of:
+//
+//   - spork.NewClient(spork.WithOrganization(id), ...) at construction,
+//     when the org is known up-front and won't change.
+//   - client.ForOrg(id).Whatever(ctx) for per-call switching on a
+//     shared client (e.g. listing every customer's monitors).
+//
+// SetOrganization will be removed in v1.0; the warnings on this
+// method exist so callers can migrate before then. The mutation
+// remains atomic against the resolver's sync.Once for callers that
+// can guarantee no concurrent org-scoped requests are in flight, but
+// that's a sharp edge most users don't actually need.
 func (c *Client) SetOrganization(orgID string) {
 	c.orgMu.Lock()
 	defer c.orgMu.Unlock()

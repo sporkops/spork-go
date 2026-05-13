@@ -63,12 +63,71 @@ spork api-key create
 
 ```go
 client := spork.NewClient(
-    spork.WithAPIKey("sk_live_..."),                   // required
+    spork.WithAPIKey("sk_live_..."),                   // required (or via env)
+    spork.WithOrganization("org_acme"),                // required for multi-org users
     spork.WithBaseURL("https://api.sporkops.com/v1"),  // default
     spork.WithUserAgent("my-app/1.0"),                 // optional prefix
-    spork.WithHTTPClient(customHTTPClient),             // optional
+    spork.WithHTTPClient(customHTTPClient),            // optional
 )
 ```
+
+### Env-var defaults
+
+For twelve-factor configs, `WithEnvDefaults` reads the three common knobs
+from the environment in one shot:
+
+```go
+client := spork.NewClient(spork.WithEnvDefaults())
+```
+
+| Variable                                | What it sets    |
+|-----------------------------------------|-----------------|
+| `SPORK_API_KEY`                         | API key         |
+| `SPORK_ORGANIZATION_ID` (or `SPORK_ORG_ID`) | Organization ID |
+| `SPORK_BASE_URL`                        | Base URL        |
+
+Options passed after `WithEnvDefaults()` override the env-derived values,
+so you can pin one knob and inherit the rest:
+
+```go
+client := spork.NewClient(
+    spork.WithEnvDefaults(),
+    spork.WithOrganization("org_pinned"),  // override env, keep env API key
+)
+```
+
+## Multi-org
+
+Pass `WithOrganization` to scope a client to a tenant:
+
+```go
+client := spork.NewClient(
+    spork.WithAPIKey(os.Getenv("SPORK_API_KEY")),
+    spork.WithOrganization("org_acme"),
+)
+```
+
+API keys are bound to a single org, so for the common single-tenant case
+you can omit `WithOrganization` and the SDK will resolve it lazily on the
+first org-scoped call. Firebase callers (humans, not API keys) who belong
+to more than one org **must** set it explicitly — the resolver refuses to
+guess.
+
+To run the same call against several orgs from one client, use `ForOrg`
+to get a per-call clone instead of mutating the receiver:
+
+```go
+client := spork.NewClient(spork.WithAPIKey(os.Getenv("SPORK_API_KEY")))
+
+acmeMonitors,  _ := client.ForOrg("org_acme").ListMonitors(ctx)
+widgetsMonitors, _ := client.ForOrg("org_widgets").ListMonitors(ctx)
+```
+
+`ForOrg` shares the underlying transport, rate-limit snapshot, and retry
+policy — there's no per-org connection cost. Prefer it over the older
+`SetOrganization` method, which mutates the receiver in place and races
+against any org-scoped call already in flight (`SetOrganization` is
+deprecated and will be removed in v1.0).
 
 ## Resources
 

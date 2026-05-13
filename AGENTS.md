@@ -24,13 +24,41 @@ client := spork.NewClient(
 
 The client is safe for concurrent use. Reuse one client for the lifetime of your program; do not construct a new one per call.
 
-Optional functional options: `WithBaseURL`, `WithUserAgent`, `WithHTTPClient`.
+For twelve-factor configs, prefer `WithEnvDefaults` — one option that reads `SPORK_API_KEY`, `SPORK_ORGANIZATION_ID` (or `SPORK_ORG_ID`), and `SPORK_BASE_URL`:
+
+```go
+client := spork.NewClient(spork.WithEnvDefaults())
+```
+
+Options passed after `WithEnvDefaults` override the env-derived values, so you can pin one knob and inherit the rest.
+
+Optional functional options: `WithOrganization`, `WithBaseURL`, `WithUserAgent`, `WithHTTPClient`, `WithEagerOrgResolve`, `WithRetryPolicy`, `WithLogger`.
 
 ## Authentication
 
 `SPORK_API_KEY` is the convention. Generate a key at <https://sporkops.com/settings/api-keys> or via the CLI (`spork apikey create`). Keys are prefixed `sk_`.
 
 Do **not** hard-code keys in source. Do **not** log them. The SDK redacts auth headers from any request/response logging it emits.
+
+## Multi-org
+
+API keys are bound to one organization, so for the common single-tenant case the SDK auto-resolves the org on first use. Firebase callers (humans with multiple memberships) **must** set it explicitly via `WithOrganization`:
+
+```go
+client := spork.NewClient(
+    spork.WithAPIKey(os.Getenv("SPORK_API_KEY")),
+    spork.WithOrganization("org_acme"),
+)
+```
+
+To run calls against several orgs from one client, use `ForOrg` for a per-call clone — concurrent goroutines can target different orgs without racing:
+
+```go
+acmeMonitors,    _ := client.ForOrg("org_acme").ListMonitors(ctx)
+widgetsMonitors, _ := client.ForOrg("org_widgets").ListMonitors(ctx)
+```
+
+`client.SetOrganization(id)` mutates the receiver in place and is **deprecated** (removed in v1.0). Use `ForOrg` for switching or `WithOrganization` at construction.
 
 ## Resources covered
 
