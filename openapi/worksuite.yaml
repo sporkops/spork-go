@@ -1,0 +1,3001 @@
+openapi: 3.0.3
+
+# OpenAPI 3.0.3 is chosen over 3.1.0 strictly for tool compatibility: at the
+# time of this writing the Go generators most teams use (`oapi-codegen`,
+# `ogen`) do not yet handle 3.1's `type: [..., "null"]` array form for
+# nullable types. 3.0.3 + `nullable: true` round-trips cleanly through every
+# generator we tested. Migrating up is a mechanical pass once the ecosystem
+# catches up.
+
+info:
+  title: Sporkops Worksuite API
+  version: 0.1.0
+  description: |
+    Sporkops Worksuite is a per-usage alternative to traditional workspace
+    suites. This document describes the Mail, Calendar, and Storage HTTP
+    APIs that power [worksuite.sporkops.com](https://worksuite.sporkops.com).
+
+    ## How this spec relates to the other Sporkops products
+
+    Worksuite shares an organization model, authentication scheme,
+    pagination contract, error envelope, webhook signature, and usage
+    surface with the Sporkops monitoring and status-page products. A
+    `sk_live_…` API key minted in the Sporkops dashboard is valid against
+    every product the key's scopes allow — there is no separate Worksuite
+    auth ceremony.
+
+    The cross-product conventions are documented in detail in
+    [`docs/api-conventions.md`](../docs/api-conventions.md).
+
+    ## Multi-organization support
+
+    Every Worksuite resource is scoped to an organization via the
+    `/v1/orgs/{org_id}/…` path segment. An API key is **bound to one
+    organization** at creation time, matching the Sporkops monitoring
+    product. Callers that need to operate across multiple organizations
+    mint one key per organization (or sign in via the dashboard, which
+    supports multi-org user sessions).
+
+    The server returns `403 forbidden` with `code: "org_mismatch"` when
+    the path's `org_id` does not match the key's binding — see the
+    `Error` schema for the full set of stable error codes.
+
+    ## SSO
+
+    Single Sign-On is on the roadmap. SSO-gated endpoints are marked with
+    the `x-sso-required: true` vendor extension so that once SSO ships the
+    capability surface is a configuration toggle, not a path migration.
+
+  contact:
+    name: Sporkops Support
+    url: https://sporkops.com/support
+    email: support@sporkops.com
+  license:
+    name: MIT
+    url: https://opensource.org/license/MIT
+  x-sporkops-product: worksuite
+  x-sporkops-status: beta
+
+servers:
+  - url: https://api.sporkops.com/v1
+    description: Production
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Users
+    description: |
+      Cross-product user identity. The `/users/me*` endpoints are
+      user-scoped — they are not nested under an organization because
+      a user may belong to multiple organizations.
+  - name: Organizations
+    description: Cross-product organization metadata.
+  - name: Members
+    description: Cross-product organization membership.
+  - name: API Keys
+    description: Cross-product API key management.
+  - name: Webhooks
+    description: Cross-product webhook subscriptions. Worksuite reuses the same signature scheme as monitoring.
+  - name: Usage
+    description: |
+      Cross-product per-usage billing meters. A single request returns
+      meters for every Sporkops product the organization subscribes to
+      (monitoring counters next to Worksuite counters).
+  - name: Audit Trail
+    description: Cross-product, org-wide audit log. Worksuite actions are interleaved with monitoring and status-page actions.
+  - name: Mail
+    description: |
+      Worksuite Mail. Resource hierarchy is **threads → messages**, with
+      independent **drafts** and **labels**. Attachments are references
+      into Worksuite Storage so attachment bytes are billed once via the
+      storage meter and shared across messages.
+  - name: Calendar
+    description: |
+      Worksuite Calendar. Recurrence is expressed as one or more RFC 5545
+      rules (`RRULE`, `RDATE`, `EXDATE`) — the same format Google Calendar
+      and iCal use.
+  - name: Storage
+    description: |
+      Worksuite Storage. Folders are files with `mime_type =
+      application/x-sporkops-folder` so callers iterate one resource type.
+      Large uploads use the open [tus.io](https://tus.io) v1.0.0 resumable
+      protocol.
+  - name: SSO
+    description: |
+      Single Sign-On (planned, not implemented). Reserved for forward
+      compatibility — operations will appear here once SSO ships. See the
+      `x-sporkops-status` extension on this tag.
+    x-sporkops-status: planned
+
+paths:
+
+  ###########################################################################
+  # Users (user-scoped, not nested under /orgs)
+  ###########################################################################
+
+  /users/me:
+    get:
+      tags: [Users]
+      operationId: getMe
+      summary: Get the authenticated user.
+      description: |
+        Returns the user identity attached to the current API key or
+        session. Org-specific fields (role, plan) come from `GET
+        /users/me/orgs` or `GET /orgs/{org_id}`.
+      responses:
+        '200':
+          description: The authenticated user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /users/me/orgs:
+    get:
+      tags: [Users]
+      operationId: listMyOrgs
+      summary: List organizations the caller belongs to.
+      description: |
+        When authenticated with an API key, this returns a single-element
+        list — the org the key is bound to. Dashboard (Firebase) sessions
+        may return multiple memberships.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Organizations the caller is a member of.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgSummaryList'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Organization (cross-product, identical surface to monitoring)
+  ###########################################################################
+
+  /orgs/{org_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Organizations]
+      operationId: getOrganization
+      summary: Get the organization.
+      responses:
+        '200':
+          description: The organization.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrganizationEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Organizations]
+      operationId: updateOrganization
+      summary: Update the organization (merge semantics).
+      description: |
+        Partial update with merge semantics: fields omitted from the body
+        are left unchanged. Owner-only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrganizationUpdate' }
+      responses:
+        '200':
+          description: The updated organization.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrganizationEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/usage:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Usage]
+      operationId: getOrganizationUsage
+      summary: Get per-usage meters across every Sporkops product.
+      description: |
+        A single envelope holds meters for every product the org
+        subscribes to. Worksuite meters appear under the
+        `worksuite` key; the `monitoring` and `status_pages` keys
+        follow the same shape and are documented in the relevant
+        product specs. Clients should treat unknown keys as
+        forward-compatible additions.
+      responses:
+        '200':
+          description: Aggregated usage.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrganizationUsageEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/audit-trail:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Audit Trail]
+      operationId: listAuditTrail
+      summary: List org-wide audit events (every product).
+      description: |
+        Returns audit events across Mail, Calendar, Storage, monitoring,
+        and status pages. Filter by `product`, `actor_id`, or `action`
+        to narrow.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - in: query
+          name: product
+          description: Filter to a single product.
+          schema:
+            type: string
+            enum: [worksuite, monitoring, status_pages]
+        - in: query
+          name: actor_id
+          description: Filter to a single actor (user or API key).
+          schema: { type: string }
+        - in: query
+          name: action
+          description: Filter to a single action (e.g. `mail.send`, `file.share`).
+          schema: { type: string }
+      responses:
+        '200':
+          description: A page of audit events.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditEventList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/api-keys:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [API Keys]
+      operationId: listApiKeys
+      summary: List API keys for the organization.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of API keys.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [API Keys]
+      operationId: createApiKey
+      summary: Mint a new API key.
+      description: |
+        The plaintext key is returned **once** in the response. Worksuite
+        scopes follow the `<product>:<resource>:<verb>` grammar — e.g.
+        `worksuite:mail:send`, `worksuite:files:read`. The wildcard
+        `worksuite:admin` grants every Worksuite verb.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiKeyCreate' }
+      responses:
+        '201':
+          description: The new API key (plaintext shown once).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/api-keys/{api_key_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: api_key_id
+        required: true
+        schema: { type: string, pattern: '^key_[a-zA-Z0-9]+$' }
+    delete:
+      tags: [API Keys]
+      operationId: deleteApiKey
+      summary: Revoke an API key.
+      responses:
+        '204': { description: Revoked. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/members:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Members]
+      operationId: listMembers
+      summary: List organization members.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of members.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/members/me:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Members]
+      operationId: getMyMembership
+      summary: Get the caller's membership record in this organization.
+      responses:
+        '200':
+          description: The caller's membership.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/webhooks:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Webhooks]
+      operationId: listWebhookSubscriptions
+      summary: List webhook subscriptions.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of webhook subscriptions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSubscriptionList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Webhooks]
+      operationId: createWebhookSubscription
+      summary: Subscribe to Worksuite events.
+      description: |
+        Deliveries are signed with the same `X-Sporkops-Signature` HMAC
+        format as monitoring webhooks: `t=<unix-seconds>,v1=<hex-hmac-sha256>`,
+        signing `<timestamp>.<raw-body>`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookSubscriptionCreate' }
+      responses:
+        '201':
+          description: The new subscription (signing secret shown once).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSubscriptionEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/webhooks/{webhook_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: webhook_id
+        required: true
+        schema: { type: string, pattern: '^whk_[a-zA-Z0-9]+$' }
+    delete:
+      tags: [Webhooks]
+      operationId: deleteWebhookSubscription
+      summary: Delete a webhook subscription.
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Mail — Threads
+  ###########################################################################
+
+  /orgs/{org_id}/mail/threads:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Mail]
+      operationId: listMailThreads
+      summary: Search threads.
+      description: |
+        Threads matching `query` are returned in reverse chronological
+        order (latest message first). `query` accepts Gmail-style search
+        operators — `from:`, `to:`, `subject:`, `has:attachment`,
+        `before:`, `after:`, `label:<label_id>`, `is:unread`, etc.
+
+        Omit `query` to list every thread in the inbox.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - in: query
+          name: query
+          description: Gmail-style search query. Empty means "all".
+          schema: { type: string }
+        - in: query
+          name: include_trash
+          description: Include threads in trash. Defaults to false.
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: A page of threads.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailThreadList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/mail/threads/{thread_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: thread_id
+        required: true
+        schema: { type: string, pattern: '^thr_[a-zA-Z0-9]+$' }
+    get:
+      tags: [Mail]
+      operationId: getMailThread
+      summary: Get a thread and its messages.
+      parameters:
+        - in: query
+          name: message_format
+          description: |
+            How much message content to return. `minimal` returns
+            headers and a snippet only. `full` returns full bodies and
+            attachment metadata. Defaults to `full`.
+          schema:
+            type: string
+            enum: [minimal, full]
+            default: full
+      responses:
+        '200':
+          description: The thread.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailThreadEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Mail]
+      operationId: updateMailThread
+      summary: Apply or remove labels on every message in a thread (merge semantics).
+      description: |
+        Merge semantics: both `add_label_ids` and `remove_label_ids` are
+        merged with the current label set on every message. Pass an empty
+        list (or omit the field) to make no change. System labels
+        (`INBOX`, `TRASH`, `SPAM`, `STARRED`, `UNREAD`, `IMPORTANT`) are
+        also accepted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MailLabelMutation' }
+      responses:
+        '200':
+          description: The updated thread.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailThreadEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/mail/threads/{thread_id}/trash:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: thread_id
+        required: true
+        schema: { type: string, pattern: '^thr_[a-zA-Z0-9]+$' }
+    post:
+      tags: [Mail]
+      operationId: trashMailThread
+      summary: Move a thread to trash.
+      responses:
+        '200':
+          description: The updated thread.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailThreadEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/mail/threads/{thread_id}/untrash:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: thread_id
+        required: true
+        schema: { type: string, pattern: '^thr_[a-zA-Z0-9]+$' }
+    post:
+      tags: [Mail]
+      operationId: untrashMailThread
+      summary: Restore a thread from trash.
+      responses:
+        '200':
+          description: The updated thread.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailThreadEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Mail — Messages
+  ###########################################################################
+
+  /orgs/{org_id}/mail/messages:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    post:
+      tags: [Mail]
+      operationId: sendMailMessage
+      summary: Send a message immediately.
+      description: |
+        The message body may be supplied either structured (`payload`) or
+        as base64 RFC 5322 (`raw`). Exactly one is required. Attachments
+        are referenced by `file_id` into Worksuite Storage — inline
+        bytes are not accepted, which keeps storage quota accounting
+        honest.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MailSendRequest' }
+      responses:
+        '202':
+          description: Accepted for delivery.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailMessageEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/mail/messages/{message_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: message_id
+        required: true
+        schema: { type: string, pattern: '^msg_[a-zA-Z0-9]+$' }
+    get:
+      tags: [Mail]
+      operationId: getMailMessage
+      summary: Get a single message.
+      parameters:
+        - in: query
+          name: message_format
+          schema:
+            type: string
+            enum: [minimal, full]
+            default: full
+      responses:
+        '200':
+          description: The message.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailMessageEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Mail]
+      operationId: updateMailMessage
+      summary: Apply or remove labels on a single message (merge semantics).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MailLabelMutation' }
+      responses:
+        '200':
+          description: The updated message.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailMessageEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Mail — Drafts
+  ###########################################################################
+
+  /orgs/{org_id}/mail/drafts:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Mail]
+      operationId: listMailDrafts
+      summary: List drafts.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - in: query
+          name: query
+          description: Gmail-style search query.
+          schema: { type: string }
+      responses:
+        '200':
+          description: A page of drafts.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailDraftList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Mail]
+      operationId: createMailDraft
+      summary: Create a draft.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MailDraftCreate' }
+      responses:
+        '201':
+          description: The created draft.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailDraftEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/mail/drafts/{draft_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: draft_id
+        required: true
+        schema: { type: string, pattern: '^drf_[a-zA-Z0-9]+$' }
+    get:
+      tags: [Mail]
+      operationId: getMailDraft
+      summary: Get a draft.
+      responses:
+        '200':
+          description: The draft.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailDraftEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Mail]
+      operationId: updateMailDraft
+      summary: Update a draft (merge semantics).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MailDraftUpdate' }
+      responses:
+        '200':
+          description: The updated draft.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailDraftEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    delete:
+      tags: [Mail]
+      operationId: deleteMailDraft
+      summary: Delete a draft.
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/mail/drafts/{draft_id}/send:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: draft_id
+        required: true
+        schema: { type: string, pattern: '^drf_[a-zA-Z0-9]+$' }
+    post:
+      tags: [Mail]
+      operationId: sendMailDraft
+      summary: Send a draft.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Accepted for delivery.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailMessageEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Mail — Labels
+  ###########################################################################
+
+  /orgs/{org_id}/mail/labels:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Mail]
+      operationId: listMailLabels
+      summary: List user-defined labels.
+      description: |
+        System labels (`INBOX`, `TRASH`, `SPAM`, `STARRED`, `UNREAD`,
+        `IMPORTANT`, `CHAT`, `DRAFT`, `SENT`) are accepted by every
+        labelling endpoint but are not returned here.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of labels.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailLabelList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Mail]
+      operationId: createMailLabel
+      summary: Create a label.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MailLabelCreate' }
+      responses:
+        '201':
+          description: The created label.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailLabelEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/mail/labels/{label_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: label_id
+        required: true
+        schema: { type: string, pattern: '^lbl_[a-zA-Z0-9]+$' }
+    patch:
+      tags: [Mail]
+      operationId: updateMailLabel
+      summary: Rename or recolour a label (merge semantics).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MailLabelUpdate' }
+      responses:
+        '200':
+          description: The updated label.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailLabelEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    delete:
+      tags: [Mail]
+      operationId: deleteMailLabel
+      summary: Delete a label.
+      description: |
+        Messages and threads that carried the label keep their other
+        labels; references to the deleted label are dropped silently.
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Mail — Addresses
+  ###########################################################################
+
+  /orgs/{org_id}/mail/addresses:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Mail]
+      operationId: listMailAddresses
+      summary: List addresses (primary + aliases) routed to the caller's mailbox.
+      responses:
+        '200':
+          description: The caller's addresses.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MailAddressList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Calendar — Calendars
+  ###########################################################################
+
+  /orgs/{org_id}/calendar/calendars:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Calendar]
+      operationId: listCalendars
+      summary: List calendars visible to the caller.
+      description: |
+        Returns the caller's primary calendar plus any secondary or
+        subscribed calendars they own or have been shared on.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of calendars.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Calendar]
+      operationId: createCalendar
+      summary: Create a secondary calendar.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CalendarCreate' }
+      responses:
+        '201':
+          description: The created calendar.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/calendar/calendars/{calendar_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: calendar_id
+        required: true
+        description: A calendar ID (`cal_…`), or the literal string `primary` to address the caller's primary calendar.
+        schema: { type: string, pattern: '^(?:cal_[a-zA-Z0-9]+|primary)$' }
+    get:
+      tags: [Calendar]
+      operationId: getCalendar
+      summary: Get a calendar.
+      responses:
+        '200':
+          description: The calendar.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Calendar]
+      operationId: updateCalendar
+      summary: Update a calendar (merge semantics).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CalendarUpdate' }
+      responses:
+        '200':
+          description: The updated calendar.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    delete:
+      tags: [Calendar]
+      operationId: deleteCalendar
+      summary: Delete a calendar.
+      description: The primary calendar cannot be deleted.
+      responses:
+        '204': { description: Deleted. }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Calendar — Events
+  ###########################################################################
+
+  /orgs/{org_id}/calendar/calendars/{calendar_id}/events:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: calendar_id
+        required: true
+        description: A calendar ID (`cal_…`), or the literal string `primary`.
+        schema: { type: string, pattern: '^(?:cal_[a-zA-Z0-9]+|primary)$' }
+    get:
+      tags: [Calendar]
+      operationId: listCalendarEvents
+      summary: List events on a calendar within a time window.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - in: query
+          name: start_time
+          description: |
+            Lower bound (inclusive). Returns events whose end time is
+            after this value. Defaults to "now" if both `start_time` and
+            `end_time` are omitted.
+          schema: { type: string, format: date-time }
+        - in: query
+          name: end_time
+          description: Upper bound (exclusive). Returns events whose start time is before this value.
+          schema: { type: string, format: date-time }
+        - in: query
+          name: full_text
+          description: Free-form search across summary, description, location, attendees.
+          schema: { type: string }
+        - in: query
+          name: order_by
+          schema:
+            type: string
+            enum: [default, start_time, start_time_desc, last_modified]
+            default: default
+      responses:
+        '200':
+          description: A page of events.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarEventList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Calendar]
+      operationId: createCalendarEvent
+      summary: Create an event.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CalendarEventCreate' }
+      responses:
+        '201':
+          description: The created event.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarEventEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/calendar/calendars/{calendar_id}/events/{event_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: calendar_id
+        required: true
+        description: A calendar ID (`cal_…`), or the literal string `primary`.
+        schema: { type: string, pattern: '^(?:cal_[a-zA-Z0-9]+|primary)$' }
+      - in: path
+        name: event_id
+        required: true
+        schema: { type: string, pattern: '^evt_[a-zA-Z0-9]+$' }
+    get:
+      tags: [Calendar]
+      operationId: getCalendarEvent
+      summary: Get an event.
+      responses:
+        '200':
+          description: The event.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarEventEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Calendar]
+      operationId: updateCalendarEvent
+      summary: Update an event (merge semantics).
+      description: |
+        Merge semantics: fields omitted from the body are left
+        unchanged. For recurring events, this updates the master
+        series unless `instance_start_time` is supplied, in which case
+        the change applies only to that occurrence (per RFC 5545
+        `RECURRENCE-ID`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CalendarEventUpdate' }
+      responses:
+        '200':
+          description: The updated event.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarEventEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    delete:
+      tags: [Calendar]
+      operationId: deleteCalendarEvent
+      summary: Delete (cancel) an event.
+      parameters:
+        - in: query
+          name: notify
+          description: Email-notification policy for attendees. Mirrors monitoring's verbose action params.
+          schema:
+            type: string
+            enum: [none, external_only, all]
+            default: external_only
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/calendar/calendars/{calendar_id}/events/{event_id}/response:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: calendar_id
+        required: true
+        description: A calendar ID (`cal_…`), or the literal string `primary`.
+        schema: { type: string, pattern: '^(?:cal_[a-zA-Z0-9]+|primary)$' }
+      - in: path
+        name: event_id
+        required: true
+        schema: { type: string, pattern: '^evt_[a-zA-Z0-9]+$' }
+    post:
+      tags: [Calendar]
+      operationId: respondToCalendarEvent
+      summary: Accept, decline, or tentatively accept an invitation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CalendarEventResponse' }
+      responses:
+        '200':
+          description: The event with the caller's updated response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarEventEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Calendar — Availability
+  ###########################################################################
+
+  /orgs/{org_id}/calendar/availability/suggest:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    post:
+      tags: [Calendar]
+      operationId: suggestCalendarTimes
+      summary: Suggest free time slots across one or more attendees.
+      description: |
+        POST rather than GET because the input set (attendee list,
+        preferences) can be large and arbitrary. Idempotent — safe to
+        retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CalendarSuggestRequest' }
+      responses:
+        '200':
+          description: Suggested time slots.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarSuggestEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Storage — Files
+  ###########################################################################
+
+  /orgs/{org_id}/storage/files:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Storage]
+      operationId: listStorageFiles
+      summary: List or search files.
+      description: |
+        Returns files (including folders) the caller can read. Use
+        `parent_id` to scope to a folder; use `query` for full-text
+        search across name, content, and metadata.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - in: query
+          name: parent_id
+          description: |
+            Restrict to direct children of this folder. Omit for the
+            root. Use the literal value `root` to be explicit.
+          schema: { type: string }
+        - in: query
+          name: query
+          description: Full-text search query.
+          schema: { type: string }
+        - in: query
+          name: trashed
+          description: When true, search inside trash only. Defaults to false.
+          schema: { type: boolean, default: false }
+        - in: query
+          name: order_by
+          schema:
+            type: string
+            enum: [name, name_desc, modified_at, modified_at_desc, size, size_desc]
+            default: modified_at_desc
+      responses:
+        '200':
+          description: A page of files.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageFileList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/storage/files/{file_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: file_id
+        required: true
+        description: |
+          A file ID (`fil_…`) or folder ID (`fol_…`). Both kinds of resource
+          are addressable here; the response's `mime_type` distinguishes
+          folders (`application/x-sporkops-folder`) from regular files.
+        schema: { type: string, pattern: '^(?:fil|fol)_[a-zA-Z0-9]+$' }
+    get:
+      tags: [Storage]
+      operationId: getStorageFile
+      summary: Get file metadata.
+      responses:
+        '200':
+          description: The file.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageFileEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    patch:
+      tags: [Storage]
+      operationId: updateStorageFile
+      summary: Rename, move, or update metadata (merge semantics).
+      description: |
+        Merge semantics: fields omitted from the body are left
+        unchanged. To move a file, set `parent_id` to the destination
+        folder's ID (or `root`). To restore from trash, set `trashed:
+        false`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StorageFileUpdate' }
+      responses:
+        '200':
+          description: The updated file.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageFileEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    delete:
+      tags: [Storage]
+      operationId: deleteStorageFile
+      summary: Permanently delete a file.
+      description: |
+        Bypasses trash. To move to trash instead, PATCH with
+        `trashed: true`.
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/storage/files/{file_id}/content:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: file_id
+        required: true
+        schema: { type: string, pattern: '^fil_[a-zA-Z0-9]+$' }
+    get:
+      tags: [Storage]
+      operationId: downloadStorageFile
+      summary: Download file content.
+      description: |
+        Honours the `Range` request header. Folders cannot be
+        downloaded — request a folder ID and the server returns
+        `400 invalid_resource_type`.
+      parameters:
+        - in: header
+          name: Range
+          description: Byte range, RFC 7233.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The full file.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '206':
+          description: Partial content (when `Range` is supplied).
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/storage/files/{file_id}/copy:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: file_id
+        required: true
+        schema: { type: string, pattern: '^fil_[a-zA-Z0-9]+$' }
+    post:
+      tags: [Storage]
+      operationId: copyStorageFile
+      summary: Copy a file.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StorageFileCopy' }
+      responses:
+        '201':
+          description: The new file.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageFileEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Storage — Folders
+  ###########################################################################
+
+  /orgs/{org_id}/storage/folders:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    post:
+      tags: [Storage]
+      operationId: createStorageFolder
+      summary: Create a folder.
+      description: |
+        A folder is a file with `mime_type =
+        application/x-sporkops-folder`. POSTing here is a convenience —
+        the same result can be achieved by POSTing to `/files` with that
+        mime type.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StorageFolderCreate' }
+      responses:
+        '201':
+          description: The created folder.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageFileEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Storage — Resumable uploads (tus.io v1.0.0)
+  ###########################################################################
+
+  /orgs/{org_id}/storage/uploads:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    post:
+      tags: [Storage]
+      operationId: createStorageUpload
+      summary: Begin a resumable upload (tus.io creation).
+      description: |
+        Implements the [tus.io v1.0.0](https://tus.io) resumable upload
+        protocol. After creation, PATCH the returned `Location` with
+        successive byte ranges.
+
+        The body of this POST is empty; the upload's metadata (name,
+        mime type, parent, size) is conveyed via the standard tus
+        `Upload-Length` and `Upload-Metadata` headers.
+      parameters:
+        - in: header
+          name: Upload-Length
+          required: true
+          description: Total upload size in bytes.
+          schema: { type: integer, format: int64, minimum: 0 }
+        - in: header
+          name: Upload-Metadata
+          required: true
+          description: |
+            Comma-separated `<key> <base64-value>` pairs. Required keys:
+            `filename`, `filetype`, `parent_id`.
+          schema: { type: string }
+        - in: header
+          name: Tus-Resumable
+          required: true
+          schema: { type: string, enum: ['1.0.0'] }
+      responses:
+        '201':
+          description: Upload created.
+          headers:
+            Location:
+              required: true
+              description: The URL to PATCH the upload bytes to.
+              schema: { type: string, format: uri }
+            Tus-Resumable:
+              required: true
+              schema: { type: string, enum: ['1.0.0'] }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Storage — Versions
+  ###########################################################################
+
+  /orgs/{org_id}/storage/files/{file_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: file_id
+        required: true
+        schema: { type: string, pattern: '^fil_[a-zA-Z0-9]+$' }
+    get:
+      tags: [Storage]
+      operationId: listStorageVersions
+      summary: List versions of a file.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of versions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageVersionList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/storage/files/{file_id}/versions/{version_id}/restore:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: file_id
+        required: true
+        schema: { type: string, pattern: '^fil_[a-zA-Z0-9]+$' }
+      - in: path
+        name: version_id
+        required: true
+        schema: { type: string, pattern: '^ver_[a-zA-Z0-9]+$' }
+    post:
+      tags: [Storage]
+      operationId: restoreStorageVersion
+      summary: Restore a prior version as the current content.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The file, now pointing at the restored version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageFileEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  ###########################################################################
+  # Storage — Shares (ACLs and share links)
+  ###########################################################################
+
+  /orgs/{org_id}/storage/files/{file_id}/shares:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: file_id
+        required: true
+        schema: { type: string, pattern: '^fil_[a-zA-Z0-9]+$' }
+    get:
+      tags: [Storage]
+      operationId: listStorageShares
+      summary: List ACLs and active share links for a file.
+      responses:
+        '200':
+          description: The file's shares.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageShareList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Storage]
+      operationId: createStorageShare
+      summary: Grant access (ACL) or create a share link.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StorageShareCreate' }
+      responses:
+        '201':
+          description: The created share.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageShareEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/storage/files/{file_id}/shares/{share_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - in: path
+        name: file_id
+        required: true
+        schema: { type: string, pattern: '^fil_[a-zA-Z0-9]+$' }
+      - in: path
+        name: share_id
+        required: true
+        schema: { type: string, pattern: '^shr_[a-zA-Z0-9]+$' }
+    delete:
+      tags: [Storage]
+      operationId: deleteStorageShare
+      summary: Revoke an ACL entry or share link.
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: sk_<env>_<token>
+      description: |
+        Bearer token using a Sporkops API key. Keys are prefixed
+        `sk_live_` or `sk_test_` and **bound to one organization at
+        creation time**. To operate across multiple organizations, mint
+        one key per organization or sign into the dashboard, which
+        supports multi-org user sessions.
+
+        Worksuite-relevant scopes follow the cross-product grammar
+        `<product>:<resource>:<verb>`:
+
+          * `worksuite:mail:read`
+          * `worksuite:mail:write`
+          * `worksuite:mail:send`
+          * `worksuite:mail:admin`
+          * `worksuite:calendar:read`
+          * `worksuite:calendar:write`
+          * `worksuite:calendar:admin`
+          * `worksuite:files:read`
+          * `worksuite:files:write`
+          * `worksuite:files:admin`
+          * `worksuite:admin` (wildcard across the three subsystems)
+
+        Missing scope yields `403 forbidden` with `code:
+        "insufficient_scope"`.
+
+  parameters:
+    OrgId:
+      in: path
+      name: org_id
+      required: true
+      description: |
+        Organization ID. Must match the org bound to the API key, or the
+        server returns `403 forbidden` with `code: "org_mismatch"`.
+      schema:
+        type: string
+        pattern: '^org_[a-zA-Z0-9]+$'
+        example: 'org_01H7TC8DZK9YV2QHE4N7X3WPMA'
+    Cursor:
+      in: query
+      name: cursor
+      description: Opaque pagination token from a prior response's `meta.next_cursor`. Omit for the first page.
+      schema: { type: string }
+    Limit:
+      in: query
+      name: limit
+      description: Maximum items per page (1–100). Defaults to 100.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      description: |
+        Optional client-generated key that makes POST safe to retry. The
+        server replays the original response for any repeat within a
+        24-hour window.
+      schema: { type: string, maxLength: 255 }
+
+  responses:
+    BadRequest:
+      description: Validation error. Returns the cross-product error envelope.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    PaymentRequired:
+      description: The organization's plan does not include this action, or a usage cap is exhausted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    Forbidden:
+      description: Authenticated but not permitted (wrong org, missing scope, or member role).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    NotFound:
+      description: Resource does not exist or the caller cannot see it.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    Conflict:
+      description: Business-rule conflict — e.g. deleting the primary calendar.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    TooManyRequests:
+      description: Rate-limited. Client should honour `Retry-After`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer, minimum: 0 }
+    UnprocessableEntity:
+      description: The request was syntactically valid but semantically rejected (e.g. recipient on the suppression list, file too large for the storage tier).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    PayloadTooLarge:
+      description: Request body or upload exceeds the per-request or per-org size limit.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    ServerError:
+      description: Unexpected server-side fault. Include `request_id` when filing a support ticket.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+
+  headers:
+    XRequestId:
+      description: Per-request opaque trace ID. Include this when reporting issues to support.
+      schema: { type: string }
+
+  schemas:
+
+    # -------------------------------------------------------------------
+    # Cross-product envelopes (verbatim alignment with monitoring/status-pages)
+    # -------------------------------------------------------------------
+
+    PageMeta:
+      type: object
+      description: Pagination metadata returned alongside every list response.
+      required: [has_more, next_cursor]
+      properties:
+        has_more:
+          type: boolean
+          description: True when another page exists after this one.
+        next_cursor:
+          type: string
+          description: Opaque token to pass on the next request. Empty when there are no more pages.
+
+    ErrorDetail:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          description: JSON-pointer-ish path to the offending field (empty for non-field errors).
+        message: { type: string }
+
+    Error:
+      type: object
+      required: [code, message]
+      description: |
+        Stable, machine-readable error codes used across every Sporkops
+        product. Worksuite emits the codes listed in the `code` enum
+        below; products may add codes within their own namespace.
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable code.
+          enum:
+            - validation_error
+            - authentication_required
+            - invalid_api_key
+            - insufficient_scope
+            - org_mismatch
+            - not_found
+            - conflict
+            - rate_limited
+            - quota_exceeded
+            - payment_required
+            - invalid_resource_type
+            - confirmation_required
+            - upstream_error
+            - internal_error
+        message:
+          type: string
+          description: Human-readable description suitable for logging or surfacing to administrators.
+        details:
+          type: array
+          items: { $ref: '#/components/schemas/ErrorDetail' }
+        request_id:
+          type: string
+          description: Mirrors the `X-Request-Id` response header.
+
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/Error' }
+
+    # -------------------------------------------------------------------
+    # User / Organization / Member (cross-product, identical to monitoring)
+    # -------------------------------------------------------------------
+
+    User:
+      type: object
+      required: [uid, email, created_at, updated_at]
+      properties:
+        uid: { type: string }
+        email: { type: string, format: email }
+        admin_role:
+          type: string
+          nullable: true
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    UserEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/User' }
+
+    OrgSummary:
+      type: object
+      required: [id, name, role]
+      properties:
+        id: { type: string, pattern: '^org_[a-zA-Z0-9]+$' }
+        name: { type: string }
+        role:
+          type: string
+          enum: [owner, member]
+
+    OrgSummaryList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/OrgSummary' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    Subscription:
+      type: object
+      required: [product, plan]
+      properties:
+        product:
+          type: string
+          enum: [worksuite, monitoring, status_pages]
+        plan: { type: string }
+        entitlements:
+          type: object
+          additionalProperties: true
+          description: Plan-specific entitlement map; keys are documented in the product's pricing page.
+        has_payment_method: { type: boolean }
+        cancel_at_period_end: { type: boolean }
+        cancel_at:
+          type: string
+          format: date-time
+          nullable: true
+        trial_ends_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Organization:
+      type: object
+      required: [id, name, created_at, updated_at]
+      properties:
+        id: { type: string, pattern: '^org_[a-zA-Z0-9]+$' }
+        name: { type: string }
+        subscriptions:
+          type: array
+          items: { $ref: '#/components/schemas/Subscription' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    OrganizationEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Organization' }
+
+    OrganizationUpdate:
+      type: object
+      properties:
+        name: { type: string, maxLength: 100 }
+
+    OrganizationUsage:
+      type: object
+      description: |
+        Per-product meters for the current billing period. Every product
+        the org subscribes to gets its own top-level key; clients should
+        treat unknown keys as forward-compatible additions.
+      properties:
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        worksuite: { $ref: '#/components/schemas/WorksuiteUsage' }
+        monitoring:
+          type: object
+          additionalProperties: true
+          description: Monitoring meters (documented in the monitoring spec).
+        status_pages:
+          type: object
+          additionalProperties: true
+          description: Status-page meters (documented in the status-pages spec).
+
+    OrganizationUsageEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/OrganizationUsage' }
+
+    WorksuiteUsage:
+      type: object
+      description: Per-usage meters for Worksuite, used for billing.
+      required: [storage_bytes_used, mail_messages_sent_period, mail_inbound_messages_period, calendar_events_period]
+      properties:
+        storage_bytes_used:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total bytes stored by the organization at the time of the call (point-in-time, not period-aggregated).
+        mail_messages_sent_period:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Messages sent within the current billing period.
+        mail_inbound_messages_period:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Messages received within the current billing period.
+        calendar_events_period:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Events created within the current billing period.
+
+    Member:
+      type: object
+      required: [id, organization_id, email, role, status]
+      properties:
+        id: { type: string, pattern: '^mem_[a-zA-Z0-9]+$' }
+        organization_id: { type: string, pattern: '^org_[a-zA-Z0-9]+$' }
+        user_id: { type: string }
+        email: { type: string, format: email }
+        role:
+          type: string
+          enum: [owner, member]
+        status:
+          type: string
+          enum: [pending, accepted]
+        invited_by:
+          type: string
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    MemberEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Member' }
+
+    MemberList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Member' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    # -------------------------------------------------------------------
+    # API keys
+    # -------------------------------------------------------------------
+
+    ApiKey:
+      type: object
+      required: [id, name, prefix, created_at]
+      properties:
+        id: { type: string, pattern: '^key_[a-zA-Z0-9]+$' }
+        name: { type: string }
+        prefix:
+          type: string
+          description: Public prefix of the key (e.g. `sk_live_abc…`); the full token is only returned on creation.
+        scopes:
+          type: array
+          items: { type: string }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at: { type: string, format: date-time }
+
+    ApiKeyWithToken:
+      allOf:
+        - $ref: '#/components/schemas/ApiKey'
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: |
+                Plaintext API key. **Returned once, on creation.** Persist
+                it securely; the server cannot show it again.
+
+    ApiKeyEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/ApiKeyWithToken' }
+
+    ApiKeyList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/ApiKey' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    ApiKeyCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 100 }
+        scopes:
+          type: array
+          items: { type: string }
+          description: |
+            Defaults to `["worksuite:admin"]` if omitted. Use the
+            narrowest scope set that satisfies the integration —
+            `worksuite:mail:send` for a transactional-email worker,
+            `worksuite:files:read` for a read-only export job, etc.
+        expires_in_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          description: When set, the key auto-revokes after this many days.
+
+    # -------------------------------------------------------------------
+    # Webhooks
+    # -------------------------------------------------------------------
+
+    WebhookSubscription:
+      type: object
+      required: [id, url, events, created_at]
+      properties:
+        id: { type: string, pattern: '^whk_[a-zA-Z0-9]+$' }
+        url: { type: string, format: uri }
+        description: { type: string }
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookEventName' }
+        created_at: { type: string, format: date-time }
+
+    WebhookSubscriptionWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/WebhookSubscription'
+        - type: object
+          required: [signing_secret]
+          properties:
+            signing_secret:
+              type: string
+              description: HMAC-SHA256 signing secret. **Returned once, on creation.**
+
+    WebhookSubscriptionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/WebhookSubscriptionWithSecret' }
+
+    WebhookSubscriptionList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookSubscription' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    WebhookSubscriptionCreate:
+      type: object
+      required: [url, events]
+      properties:
+        url: { type: string, format: uri }
+        description: { type: string, maxLength: 200 }
+        events:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/WebhookEventName' }
+
+    WebhookEventName:
+      type: string
+      enum:
+        # Mail
+        - mail.received
+        - mail.sent
+        # Calendar
+        - calendar.event.created
+        - calendar.event.updated
+        - calendar.event.cancelled
+        - calendar.event.invitation_response
+        # Storage
+        - storage.file.created
+        - storage.file.updated
+        - storage.file.deleted
+        - storage.file.shared
+        # Cross-product (already used by monitoring; listed for discoverability)
+        - monitor.up
+        - monitor.down
+
+    # -------------------------------------------------------------------
+    # Audit trail
+    # -------------------------------------------------------------------
+
+    AuditEvent:
+      type: object
+      required: [id, occurred_at, product, action, actor_id]
+      properties:
+        id: { type: string, pattern: '^aud_[a-zA-Z0-9]+$' }
+        occurred_at: { type: string, format: date-time }
+        product:
+          type: string
+          enum: [worksuite, monitoring, status_pages]
+        action:
+          type: string
+          description: |
+            Dotted action identifier, e.g. `mail.send`, `file.share`,
+            `monitor.create`. Worksuite-emitted actions are prefixed
+            with the subsystem (`mail.*`, `calendar.*`, `storage.*`).
+        actor_id:
+          type: string
+          description: User UID, member ID, or API key ID that performed the action.
+        actor_type:
+          type: string
+          enum: [user, api_key, system]
+        resource_id: { type: string }
+        resource_type: { type: string }
+        request_id: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+
+    AuditEventList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEvent' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    # -------------------------------------------------------------------
+    # Mail
+    # -------------------------------------------------------------------
+
+    MailAddress:
+      type: object
+      required: [email]
+      properties:
+        name: { type: string, description: 'Display name. Optional.' }
+        email: { type: string, format: email }
+
+    MailAddressList:
+      type: object
+      required: [data, meta]
+      description: |
+        Users typically have a small fixed number of addresses (primary +
+        aliases). The list still uses the shared `{data, meta}` envelope so
+        callers can reuse the same pagination helper they use for threads
+        and files; `meta.has_more` will be `false` in practice.
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [email, is_primary]
+            properties:
+              email: { type: string, format: email }
+              is_primary: { type: boolean }
+              verified: { type: boolean }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    MailAttachment:
+      type: object
+      description: |
+        An attachment is a reference to a file in Worksuite Storage —
+        attachments are not inlined as base64 in the JSON body. This
+        means storage quota accounting stays correct and a file referenced
+        by many messages is billed once.
+      required: [file_id]
+      properties:
+        file_id: { type: string, pattern: '^fil_[a-zA-Z0-9]+$' }
+        filename:
+          type: string
+          description: Override the storage filename for this attachment. Optional.
+        content_id:
+          type: string
+          description: When set, the attachment is rendered inline (e.g. embedded image).
+        disposition:
+          type: string
+          enum: [attachment, inline]
+          default: attachment
+
+    MailPayload:
+      type: object
+      description: Structured message body. Either this or `raw` is required on send/create.
+      properties:
+        from: { $ref: '#/components/schemas/MailAddress' }
+        to:
+          type: array
+          items: { $ref: '#/components/schemas/MailAddress' }
+        cc:
+          type: array
+          items: { $ref: '#/components/schemas/MailAddress' }
+        bcc:
+          type: array
+          items: { $ref: '#/components/schemas/MailAddress' }
+        reply_to:
+          type: array
+          items: { $ref: '#/components/schemas/MailAddress' }
+        subject: { type: string }
+        text: { type: string, description: 'Plain-text body.' }
+        html: { type: string, description: 'HTML body. Sanitised server-side.' }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: Custom headers (`X-…`). Reserved headers like `From`, `To`, `Subject` are rejected here.
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/MailAttachment' }
+
+    MailMessage:
+      type: object
+      required: [id, thread_id, label_ids, received_at, snippet]
+      properties:
+        id: { type: string, pattern: '^msg_[a-zA-Z0-9]+$' }
+        thread_id: { type: string, pattern: '^thr_[a-zA-Z0-9]+$' }
+        label_ids:
+          type: array
+          items: { $ref: '#/components/schemas/MailLabelId' }
+          description: User labels and system labels (`INBOX`, `UNREAD`, …).
+        snippet: { type: string, description: 'Short preview of the body. ~200 chars.' }
+        received_at: { type: string, format: date-time }
+        size_bytes: { type: integer, format: int64, minimum: 0 }
+        payload: { $ref: '#/components/schemas/MailPayload' }
+        raw:
+          type: string
+          format: byte
+          description: |
+            Base64-encoded RFC 5322 message. Only present when the
+            request specified `message_format=full`.
+
+    MailMessageEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/MailMessage' }
+
+    MailThread:
+      type: object
+      required: [id, snippet, message_count, label_ids, last_message_at]
+      properties:
+        id: { type: string, pattern: '^thr_[a-zA-Z0-9]+$' }
+        snippet: { type: string }
+        message_count: { type: integer, minimum: 1 }
+        label_ids:
+          type: array
+          items: { $ref: '#/components/schemas/MailLabelId' }
+        last_message_at: { type: string, format: date-time }
+        messages:
+          type: array
+          description: Populated when fetched via `GET /threads/{id}` or when the list endpoint includes them inline.
+          items: { $ref: '#/components/schemas/MailMessage' }
+
+    MailThreadEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/MailThread' }
+
+    MailThreadList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/MailThread' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    MailLabelMutation:
+      type: object
+      description: Apply or remove labels in a single PATCH.
+      properties:
+        add_label_ids:
+          type: array
+          items: { $ref: '#/components/schemas/MailLabelId' }
+        remove_label_ids:
+          type: array
+          items: { $ref: '#/components/schemas/MailLabelId' }
+
+    MailSendRequest:
+      type: object
+      description: Send a message immediately. Either `payload` or `raw` is required.
+      properties:
+        payload: { $ref: '#/components/schemas/MailPayload' }
+        raw:
+          type: string
+          format: byte
+          description: Base64-encoded RFC 5322 message body.
+        thread_id:
+          type: string
+          pattern: '^thr_[a-zA-Z0-9]+$'
+          description: When set, the message is delivered into this thread (reply).
+
+    MailDraft:
+      type: object
+      required: [id, created_at, updated_at, payload]
+      properties:
+        id: { type: string, pattern: '^drf_[a-zA-Z0-9]+$' }
+        thread_id:
+          type: string
+          pattern: '^thr_[a-zA-Z0-9]+$'
+          nullable: true
+        payload: { $ref: '#/components/schemas/MailPayload' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    MailDraftEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/MailDraft' }
+
+    MailDraftList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/MailDraft' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    MailDraftCreate:
+      type: object
+      required: [payload]
+      properties:
+        payload: { $ref: '#/components/schemas/MailPayload' }
+        thread_id:
+          type: string
+          pattern: '^thr_[a-zA-Z0-9]+$'
+          description: Reply into an existing thread.
+
+    MailDraftUpdate:
+      type: object
+      properties:
+        payload: { $ref: '#/components/schemas/MailPayload' }
+
+    MailSystemLabel:
+      type: string
+      description: |
+        Server-managed labels every mailbox carries. They cannot be created,
+        renamed, or deleted — only attached to or detached from messages and
+        threads via the `add_label_ids` / `remove_label_ids` mutation.
+      enum:
+        - INBOX
+        - UNREAD
+        - STARRED
+        - IMPORTANT
+        - SENT
+        - DRAFT
+        - SPAM
+        - TRASH
+
+    MailLabelId:
+      description: |
+        Either a `MailSystemLabel` literal (`INBOX`, `UNREAD`, …) or a
+        user-defined label ID (`lbl_…`). Distinguishing the two by shape
+        means clients never have to special-case system labels in their
+        type system.
+      oneOf:
+        - $ref: '#/components/schemas/MailSystemLabel'
+        - type: string
+          pattern: '^lbl_[a-zA-Z0-9]+$'
+
+    MailLabel:
+      type: object
+      required: [id, display_name]
+      properties:
+        id: { type: string, pattern: '^lbl_[a-zA-Z0-9]+$' }
+        display_name: { type: string }
+        text_color:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+        background_color:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+
+    MailLabelEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/MailLabel' }
+
+    MailLabelList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/MailLabel' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    MailLabelCreate:
+      type: object
+      required: [display_name]
+      properties:
+        display_name: { type: string, maxLength: 100 }
+        text_color: { type: string, pattern: '^#[0-9a-fA-F]{6}$' }
+        background_color: { type: string, pattern: '^#[0-9a-fA-F]{6}$' }
+
+    MailLabelUpdate:
+      type: object
+      properties:
+        display_name: { type: string, maxLength: 100 }
+        text_color: { type: string, pattern: '^#[0-9a-fA-F]{6}$' }
+        background_color: { type: string, pattern: '^#[0-9a-fA-F]{6}$' }
+
+    # -------------------------------------------------------------------
+    # Calendar
+    # -------------------------------------------------------------------
+
+    Calendar:
+      type: object
+      required: [id, summary, time_zone, role, created_at]
+      properties:
+        id: { type: string, pattern: '^cal_[a-zA-Z0-9]+$' }
+        summary: { type: string }
+        description: { type: string }
+        time_zone:
+          type: string
+          description: IANA Time Zone Database name (e.g. `America/Los_Angeles`).
+        color: { type: string }
+        is_primary: { type: boolean }
+        role:
+          type: string
+          enum: [owner, writer, reader, free_busy_reader]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CalendarEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/Calendar' }
+
+    CalendarList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Calendar' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    CalendarCreate:
+      type: object
+      required: [summary, time_zone]
+      properties:
+        summary: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        time_zone: { type: string }
+
+    CalendarUpdate:
+      type: object
+      properties:
+        summary: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        time_zone: { type: string }
+        color: { type: string }
+
+    CalendarAttendee:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+        display_name: { type: string }
+        optional: { type: boolean, default: false }
+        organizer: { type: boolean, default: false }
+        response_status:
+          type: string
+          enum: [needs_action, declined, tentative, accepted]
+          description: The attendee's current RSVP. Set by `POST /events/{id}/response` on their behalf.
+
+    CalendarReminder:
+      type: object
+      required: [method, minutes]
+      properties:
+        method:
+          type: string
+          enum: [email, popup]
+        minutes:
+          type: integer
+          minimum: 0
+          maximum: 40320
+          description: Minutes before the event start to fire the reminder.
+
+    CalendarConference:
+      type: object
+      description: A video-conferencing link attached to the event.
+      properties:
+        provider:
+          type: string
+          enum: [google_meet, custom]
+        url: { type: string, format: uri }
+
+    CalendarEvent:
+      type: object
+      required: [id, calendar_id, summary, start_time, end_time, status]
+      properties:
+        id: { type: string, pattern: '^evt_[a-zA-Z0-9]+$' }
+        calendar_id:
+          type: string
+          description: |
+            Either a calendar ID (`cal_…`) or the literal `primary` for the
+            owner's primary calendar.
+          pattern: '^(primary|cal_[a-zA-Z0-9]+)$'
+        summary: { type: string }
+        description: { type: string, description: 'May contain HTML.' }
+        location: { type: string }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        all_day:
+          type: boolean
+          default: false
+          description: When true, `start_time` and `end_time` are midnight UTC of the involved dates.
+        time_zone: { type: string }
+        recurrence:
+          type: array
+          items: { type: string }
+          description: |
+            RFC 5545 recurrence rules. Each string is one of `RRULE:…`,
+            `RDATE:…`, or `EXDATE:…`. Set on the master event of a
+            series; instance overrides use `recurrence_id`.
+        recurrence_id:
+          type: string
+          description: For a single-instance override, the RFC 5545 RECURRENCE-ID of the modified occurrence.
+        attendees:
+          type: array
+          items: { $ref: '#/components/schemas/CalendarAttendee' }
+        reminders:
+          type: array
+          items: { $ref: '#/components/schemas/CalendarReminder' }
+        conference: { $ref: '#/components/schemas/CalendarConference' }
+        visibility:
+          type: string
+          enum: [default, public, private]
+          default: default
+        status:
+          type: string
+          enum: [confirmed, tentative, cancelled]
+        organizer: { $ref: '#/components/schemas/CalendarAttendee' }
+        attachments:
+          type: array
+          items:
+            type: object
+            required: [file_id]
+            properties:
+              file_id: { type: string, pattern: '^fil_[a-zA-Z0-9]+$' }
+              title: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CalendarEventEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/CalendarEvent' }
+
+    CalendarEventList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/CalendarEvent' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    CalendarEventCreate:
+      type: object
+      required: [summary, start_time, end_time]
+      properties:
+        summary: { type: string, maxLength: 1024 }
+        description: { type: string }
+        location: { type: string }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        all_day: { type: boolean, default: false }
+        time_zone: { type: string }
+        recurrence:
+          type: array
+          items: { type: string }
+        attendees:
+          type: array
+          items: { $ref: '#/components/schemas/CalendarAttendee' }
+        reminders:
+          type: array
+          items: { $ref: '#/components/schemas/CalendarReminder' }
+        add_google_meet_url:
+          type: boolean
+          default: false
+          description: When true, the server attaches a freshly-provisioned Google Meet URL.
+        visibility:
+          type: string
+          enum: [default, public, private]
+          default: default
+        notify:
+          type: string
+          enum: [none, external_only, all]
+          default: external_only
+
+    CalendarEventUpdate:
+      type: object
+      properties:
+        summary: { type: string }
+        description: { type: string }
+        location: { type: string }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        all_day: { type: boolean }
+        time_zone: { type: string }
+        recurrence:
+          type: array
+          items: { type: string }
+        instance_start_time:
+          type: string
+          format: date-time
+          description: |
+            When set, the update applies only to the occurrence starting
+            at this time (RFC 5545 single-instance override). Omit to
+            update the entire series.
+        add_attendee_emails:
+          type: array
+          items: { type: string, format: email }
+        remove_attendee_emails:
+          type: array
+          items: { type: string, format: email }
+        reminders:
+          type: array
+          items: { $ref: '#/components/schemas/CalendarReminder' }
+        notify:
+          type: string
+          enum: [none, external_only, all]
+          default: external_only
+
+    CalendarEventResponse:
+      type: object
+      required: [response_status]
+      properties:
+        response_status:
+          type: string
+          enum: [accepted, declined, tentative]
+        comment: { type: string, maxLength: 1024 }
+        notify:
+          type: string
+          enum: [none, external_only, all]
+          default: external_only
+
+    CalendarSuggestRequest:
+      type: object
+      required: [attendee_emails, start_time, end_time]
+      properties:
+        attendee_emails:
+          type: array
+          minItems: 1
+          items: { type: string, format: email }
+          description: |
+            Email addresses to check availability for. Include `primary`
+            to denote the calling user's primary calendar.
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        duration_minutes:
+          type: integer
+          minimum: 5
+          maximum: 1440
+          default: 30
+        time_zone: { type: string }
+        preferences:
+          type: object
+          properties:
+            start_hour:
+              type: string
+              pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+              description: Local "HH:MM" lower bound for suggested slots.
+            end_hour:
+              type: string
+              pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+            exclude_weekends:
+              type: boolean
+              default: false
+            page_size:
+              type: integer
+              minimum: 1
+              maximum: 25
+              default: 5
+
+    CalendarSuggestEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [suggestions]
+          properties:
+            suggestions:
+              type: array
+              items:
+                type: object
+                required: [start_time, end_time]
+                properties:
+                  start_time: { type: string, format: date-time }
+                  end_time: { type: string, format: date-time }
+                  attendee_status:
+                    type: array
+                    items:
+                      type: object
+                      required: [email, status]
+                      properties:
+                        email: { type: string, format: email }
+                        status:
+                          type: string
+                          enum: [free, busy, unknown]
+
+    # -------------------------------------------------------------------
+    # Storage
+    # -------------------------------------------------------------------
+
+    StorageFile:
+      type: object
+      required: [id, name, mime_type, size_bytes, parent_id, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: |
+            Prefixed ID. Folders use `fol_…`; non-folder files use
+            `fil_…`. Either is valid wherever a file ID is accepted.
+        name: { type: string }
+        mime_type:
+          type: string
+          description: |
+            IANA media type, or `application/x-sporkops-folder` for a
+            folder.
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Always 0 for folders.
+        parent_id:
+          type: string
+          description: Parent folder ID, or the literal value `root`.
+        path:
+          type: string
+          description: Server-computed slash-delimited path including the file's own name. Read-only.
+        trashed: { type: boolean }
+        starred: { type: boolean }
+        owner:
+          type: object
+          required: [email]
+          properties:
+            email: { type: string, format: email }
+            user_id: { type: string }
+        version_id:
+          type: string
+          pattern: '^ver_[a-zA-Z0-9]+$'
+          description: The version_id currently surfaced at `GET /files/{id}/content`.
+        checksum_sha256:
+          type: string
+          description: Hex-encoded SHA-256 of the file content. Empty for folders.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    StorageFileEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/StorageFile' }
+
+    StorageFileList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/StorageFile' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    StorageFileUpdate:
+      type: object
+      description: |
+        Merge-semantics update. Pass only the fields you want to change.
+        To move, set `parent_id`. To trash/untrash, set `trashed`. To
+        star, set `starred`.
+      properties:
+        name: { type: string }
+        parent_id: { type: string }
+        trashed: { type: boolean }
+        starred: { type: boolean }
+
+    StorageFileCopy:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Name of the new copy. Defaults to "Copy of {original name}" when omitted.
+        parent_id:
+          type: string
+          description: Destination folder. Defaults to the original's parent.
+
+    StorageFolderCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        parent_id:
+          type: string
+          description: Parent folder ID, or `root`.
+
+    StorageVersion:
+      type: object
+      required: [id, file_id, size_bytes, created_at]
+      properties:
+        id: { type: string, pattern: '^ver_[a-zA-Z0-9]+$' }
+        file_id: { type: string, pattern: '^fil_[a-zA-Z0-9]+$' }
+        size_bytes: { type: integer, format: int64, minimum: 0 }
+        checksum_sha256: { type: string }
+        created_at: { type: string, format: date-time }
+        created_by:
+          type: string
+          description: User UID or API key ID that uploaded this version.
+
+    StorageVersionList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/StorageVersion' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    StorageShare:
+      type: object
+      required: [id, file_id, kind, created_at]
+      description: |
+        A `StorageShare` is either an ACL entry (one principal,
+        identified by `email`) or a share link (no principal,
+        identified by `link_url`). The `kind` discriminator chooses.
+      properties:
+        id: { type: string, pattern: '^shr_[a-zA-Z0-9]+$' }
+        file_id: { type: string }
+        kind:
+          type: string
+          enum: [acl, link]
+        role:
+          type: string
+          enum: [owner, editor, commenter, viewer]
+        # ACL fields:
+        email: { type: string, format: email, description: 'Set when kind = acl.' }
+        # Link fields:
+        link_url: { type: string, format: uri, description: 'Set when kind = link.' }
+        link_password_protected: { type: boolean, description: 'Set when kind = link.' }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at: { type: string, format: date-time }
+
+    StorageShareEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/StorageShare' }
+
+    StorageShareList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/StorageShare' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    StorageShareCreate:
+      oneOf:
+        - title: AclShare
+          type: object
+          required: [kind, email, role]
+          properties:
+            kind: { type: string, enum: [acl] }
+            email: { type: string, format: email }
+            role:
+              type: string
+              enum: [editor, commenter, viewer]
+            notify:
+              type: boolean
+              default: true
+              description: Send the recipient a notification email.
+        - title: LinkShare
+          type: object
+          required: [kind, role]
+          properties:
+            kind: { type: string, enum: [link] }
+            role:
+              type: string
+              enum: [editor, commenter, viewer]
+            password:
+              type: string
+              minLength: 6
+              description: Optional password gating the link.
+            expires_at: { type: string, format: date-time }

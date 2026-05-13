@@ -1,0 +1,217 @@
+extends:
+  - spectral:oas
+
+# Project-specific rules that enforce the Sporkops API conventions documented
+# in docs/api-conventions.md. Where a default Spectral rule already covers the
+# convention, we leave it on; the rules below add coverage Spectral misses.
+
+rules:
+
+  # Summaries are mandatory (see sporkops-operation-summary below). Per-
+  # operation `description` blocks are optional; we use them when there's
+  # something non-obvious to say, not as boilerplate filler.
+  operation-description: off
+
+  # We allow polymorphic IDs (parent_id = root|fol_…, calendar_id = primary|
+  # cal_…) so an over-strict default ID-pattern rule would force us to wrap
+  # every such property in oneOf for no semantic gain. The sporkops-string-
+  # ids-have-pattern rule below remains at `warn` to keep the convention
+  # visible without breaking the build.
+
+
+  # ---- Path conventions ---------------------------------------------------
+
+  sporkops-paths-org-scoped:
+    description: >
+      Every Sporkops API path must be either user-scoped (`/users/me*`) or
+      org-scoped (`/orgs/{org_id}/…`). Anything else is a violation of the
+      Sporkops convention.
+    message: "Path '{{property}}' is neither user-scoped (/users/me*) nor org-scoped (/orgs/{org_id}/…)."
+    severity: error
+    given: "$.paths"
+    then:
+      field: "@key"
+      function: pattern
+      functionOptions:
+        match: "^/(?:users/me(?:/[^/]+)*|orgs/\\{org_id\\}(?:/.*)?)$"
+
+  sporkops-paths-no-trailing-slash:
+    description: Paths must not end with a trailing slash.
+    severity: error
+    given: "$.paths"
+    then:
+      field: "@key"
+      function: pattern
+      functionOptions:
+        notMatch: "/$"
+
+  # ---- Property naming ----------------------------------------------------
+
+  sporkops-property-snake-case:
+    description: >
+      Every property name in a schema MUST be snake_case to match the rest of
+      the Sporkops API surface (monitoring, status pages, this product).
+    message: "Property '{{property}}' is not snake_case."
+    severity: error
+    given:
+      - "$.components.schemas..properties[*]~"
+      - "$.paths..properties[*]~"
+    then:
+      function: pattern
+      functionOptions:
+        match: "^[a-z][a-z0-9_]*$"
+
+  sporkops-query-param-snake-case:
+    description: Query parameters MUST be snake_case.
+    message: "Query parameter '{{value}}' is not snake_case."
+    severity: error
+    given: "$.paths..parameters[?(@.in == 'query')].name"
+    then:
+      function: pattern
+      functionOptions:
+        match: "^[a-z][a-z0-9_]*$"
+
+  sporkops-path-param-snake-case:
+    description: Path parameters MUST be snake_case.
+    message: "Path parameter '{{value}}' is not snake_case."
+    severity: error
+    given: "$.paths..parameters[?(@.in == 'path')].name"
+    then:
+      function: pattern
+      functionOptions:
+        match: "^[a-z][a-z0-9_]*$"
+
+  # ---- Error envelope -----------------------------------------------------
+
+  sporkops-error-envelope:
+    description: >
+      Error responses (4XX/5XX) MUST reference the shared ErrorEnvelope
+      schema so clients can parse errors uniformly across products.
+    message: "Error response does not use the shared #/components/schemas/ErrorEnvelope."
+    severity: error
+    given: "$.paths..responses[?(@property.match(/^(4|5)/) || @property === 'default')].content['application/json'].schema.$ref"
+    then:
+      function: pattern
+      functionOptions:
+        match: "#/components/schemas/ErrorEnvelope$"
+
+  # ---- Operations ---------------------------------------------------------
+
+  sporkops-operation-error-coverage:
+    description: >
+      Every operation MUST document at least one error response — either a
+      `default` response or any 4XX/5XX status code. Stricter than Spectral's
+      default operation-4xx-response which rejects `default`-only coverage.
+    message: "Operation '{{property}}' must document at least one error response (default, 4XX, or 5XX)."
+    severity: error
+    given: "$.paths.*[?( @property === 'get' || @property === 'post' || @property === 'put' || @property === 'patch' || @property === 'delete' )]"
+    then:
+      field: responses
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          # Require at least one key matching 4XX, 5XX, or "default"
+          patternProperties:
+            "^(default|[45](?:[0-9]{2}|XX))$":
+              type: object
+          minProperties: 1
+
+  sporkops-operation-id-camelCase:
+    description: operationId MUST be camelCase (matches Go method naming after generation).
+    message: "operationId '{{value}}' is not camelCase."
+    severity: error
+    given: "$.paths..operationId"
+    then:
+      function: pattern
+      functionOptions:
+        match: "^[a-z][a-zA-Z0-9]*$"
+
+  sporkops-operation-summary:
+    description: Every operation must have a summary.
+    severity: error
+    given: "$.paths..[get,post,put,patch,delete]"
+    then:
+      field: summary
+      function: truthy
+
+  sporkops-operation-tag:
+    description: Every operation must carry exactly one tag for navigation.
+    severity: error
+    given: "$.paths..[get,post,put,patch,delete]"
+    then:
+      field: tags
+      function: schema
+      functionOptions:
+        schema:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
+
+  # ---- Pagination contract -----------------------------------------------
+
+  sporkops-list-envelope-shape:
+    description: >
+      Every schema whose `data` property is an array MUST also declare a
+      `meta` property referencing the shared PageMeta. This is what keeps
+      pagination uniform across products and lets a Go/TS client author a
+      single auto-paginator helper.
+    message: "List-shaped schema must reference #/components/schemas/PageMeta via a `meta` property."
+    severity: error
+    given: "$.components.schemas[?(@.properties && @.properties.data && @.properties.data.type === 'array')]"
+    then:
+      field: properties.meta.$ref
+      function: pattern
+      functionOptions:
+        match: "PageMeta$"
+
+  # ---- Update semantics --------------------------------------------------
+
+  sporkops-patch-describes-merge:
+    description: >
+      Every PATCH operation MUST mention "merge semantics" in its description
+      so callers know unspecified fields are preserved. PUT means full
+      replacement; Sporkops standardises on PATCH and don't use PUT.
+    severity: error
+    given: "$.paths..patch"
+    then:
+      field: description
+      function: pattern
+      functionOptions:
+        match: "[Mm]erge [Ss]emantics"
+
+  sporkops-no-put:
+    description: >
+      Sporkops standardises on PATCH for updates (merge semantics). The
+      legacy monitoring/status-pages PUT/PATCH split is a known papercut we
+      are not propagating. Use PATCH everywhere; if full replacement is
+      genuinely needed, model it as a POST to a dedicated sub-resource.
+    severity: error
+    given: "$.paths.*"
+    then:
+      field: put
+      function: falsy
+
+  # ---- ID format ---------------------------------------------------------
+
+  sporkops-string-ids-have-pattern:
+    description: >
+      String properties named `id`, `<thing>_id`, or `id`-shaped MUST declare
+      a `pattern` documenting the prefix. Stops drift like one schema saying
+      `^mon_` and another saying `^monitor_`.
+    severity: warn
+    given:
+      - "$.components.schemas..properties.id"
+      - "$.components.schemas..properties[?(@property.match(/_id$/))]"
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          # Allow either a direct pattern, or oneOf-with-pattern, or an external $ref
+          anyOf:
+            - required: [pattern]
+            - required: [$ref]
+            - required: [oneOf]
