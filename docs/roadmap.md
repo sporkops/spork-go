@@ -105,21 +105,22 @@ Mail-class). Tied to JMAP `Email/changes` in section A.
 
 ### B5. Member management endpoints
 
-The spec exposes `GET /v1/orgs/{org_id}/members` and
-`/members/me` but not invite / role-change / remove. The conventions
-doc references `GET /v1/members/invites` and `POST /v1/members/accept`
-without defining their schemas.
+**Status:** mostly shipped — invite + role-change + remove are in the
+spec. The agency model is a `Member.is_agency` boolean rather than a
+separate role; `MemberRole` enumerates `[owner, admin, member]`.
 
-**Proposal:**
+**Still outstanding:**
 
-- `POST /v1/orgs/{org_id}/members/invites` (admin creates invite)
-- `GET /v1/members/invites` (user lists pending invites across orgs)
-- `POST /v1/members/accept` / `POST /v1/members/decline`
-- `PATCH /v1/orgs/{org_id}/members/{member_id}` (change role)
-- `DELETE /v1/orgs/{org_id}/members/{member_id}` (remove)
-
-Roles enum: `owner`, `admin`, `member`, `agent` (the agency role, see
-[api-conventions §3a](./api-conventions.md#3a-agencies-and-multi-client-access)).
+- **Owner transfer.** `POST /v1/orgs/{org_id}/owner-transfer` is
+  reserved in the spec but returns `501 not_implemented`. Implement
+  the atomic two-sided transfer (demote current owner + promote
+  target in one transaction; require `confirm: true`) when the
+  product flow is designed.
+- **Self-removal.** `DELETE /v1/orgs/{org_id}/members/me` is
+  intentionally not exposed yet. Add when we decide whether
+  last-owner self-removal blocks or auto-transfers (it should block,
+  but the UX flow needs to lead the user to the transfer endpoint
+  once that ships).
 
 ### B6. Data residency
 

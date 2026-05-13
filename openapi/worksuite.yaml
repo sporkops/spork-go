@@ -157,6 +157,80 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/ServerError' }
 
+  /users/me/invites:
+    get:
+      tags: [Members]
+      operationId: listMyInvites
+      summary: List pending invitations for the authenticated user.
+      description: |
+        Returns every invitation outstanding against the caller's email
+        address across every Sporkops organization. The agency operator
+        pattern (api-conventions.md §3a) relies on this endpoint to
+        present a unified "you've been invited to N orgs" view.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of pending invitations.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberInviteList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /users/me/invites/{invite_id}/accept:
+    parameters:
+      - $ref: '#/components/parameters/InviteId'
+    post:
+      tags: [Members]
+      operationId: acceptInvite
+      summary: Accept an organization invitation.
+      description: |
+        On success, returns the newly-created `Member` record for the org
+        the invite belonged to. The corresponding `MemberInvite` flips
+        to `status: accepted` and a `member.accepted` webhook fires
+        against the inviting org.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Invitation accepted; new membership returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /users/me/invites/{invite_id}/decline:
+    parameters:
+      - $ref: '#/components/parameters/InviteId'
+    post:
+      tags: [Members]
+      operationId: declineInvite
+      summary: Decline an organization invitation.
+      description: |
+        The `MemberInvite` flips to `status: declined`. No membership is
+        created. A `member.declined` webhook fires against the
+        inviting org.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204': { description: Invitation declined. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          $ref: '#/components/responses/Gone'
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
   ###########################################################################
   # Organization (cross-product, identical surface to monitoring)
   ###########################################################################
@@ -368,6 +442,207 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MemberEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/members/{member_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/MemberId'
+    patch:
+      tags: [Members]
+      operationId: updateMember
+      summary: Change a member's role or flip the agency flag (merge semantics).
+      description: |
+        Partial update with merge semantics: fields omitted from the body
+        are left unchanged. Only admins and owners can call this.
+
+        **Last-owner protection** — demoting the only `owner` returns
+        `409 conflict` with `code: "conflict"`. Promote another member
+        to `owner` first.
+
+        **Owner transfer** — moving ownership between members is
+        deliberately not exposed here yet; see
+        `POST /orgs/{org_id}/owner-transfer` for the planned flow.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MemberUpdate' }
+      responses:
+        '200':
+          description: The updated member.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    delete:
+      tags: [Members]
+      operationId: deleteMember
+      summary: Remove a member from the organization.
+      description: |
+        Hard-removes the member. Admins and owners only. Returns
+        `409 conflict` with `code: "conflict"` when called against the
+        only remaining `owner` — promote another member first.
+
+        Self-removal (a member leaving an org without admin action) is
+        intentionally not supported in this release. Track in
+        [docs/roadmap.md](../docs/roadmap.md) §B5.
+      responses:
+        '204': { description: Member removed. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/members/invites:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Members]
+      operationId: listMemberInvites
+      summary: List pending invitations for the organization.
+      description: |
+        Admins and owners only. Returns invitations the org has emitted
+        whose `status` is `pending`. Past invitations
+        (`accepted`/`declined`/`expired`/`revoked`) drop off this list;
+        the audit trail records them indefinitely.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of pending invitations.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberInviteList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    post:
+      tags: [Members]
+      operationId: createMemberInvite
+      summary: Invite a person to the organization.
+      description: |
+        Generates a one-time invite token, emails it to `email`, and
+        returns the resulting `MemberInvite`. Invites expire after 7
+        days; expired invites can be resent (which mints a new token).
+
+        Calling with an `email` that already has an accepted membership
+        returns `409 conflict`. Calling with an `email` that already has
+        a pending invite is a no-op idempotent return of that invite
+        (the existing token is preserved).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MemberInviteCreate' }
+      responses:
+        '201':
+          description: Invitation created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberInviteEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/members/invites/{invite_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/InviteId'
+    delete:
+      tags: [Members]
+      operationId: revokeMemberInvite
+      summary: Revoke a pending invitation.
+      description: |
+        Flips the invitation to `status: revoked`. The recipient's
+        token stops working immediately. Already-accepted invitations
+        return `409 conflict` — remove the resulting member instead.
+      responses:
+        '204': { description: Invitation revoked. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/members/invites/{invite_id}/resend:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/InviteId'
+    post:
+      tags: [Members]
+      operationId: resendMemberInvite
+      summary: Re-send a pending invitation email.
+      description: |
+        Mints a fresh one-time token, invalidates the previous one, and
+        re-emails the recipient. The `MemberInvite.expires_at` resets
+        to seven days from now. No-op on `accepted`/`declined`/`revoked`
+        invitations — returns `409 conflict`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Invitation re-sent; returns the refreshed invite record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberInviteEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /orgs/{org_id}/owner-transfer:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    post:
+      tags: [Members]
+      operationId: transferOrganizationOwnership
+      summary: Transfer organization ownership to another member. (not yet implemented)
+      description: |
+        Reserved endpoint. The dedicated transfer flow is intentionally
+        not built yet — the current release returns `501 not
+        implemented` and surfaces no behaviour. The endpoint exists so
+        clients can detect server support via `OPTIONS` / 501 and
+        so the path doesn't move when the feature ships.
+
+        Track progress under `docs/roadmap.md` §B5.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OwnerTransferRequest' }
+      responses:
+        '204':
+          description: |
+            Reserved success response — **not emitted today**. When the
+            transfer flow ships, this is the success status code (no
+            body; clients should re-fetch `GET /orgs/{org_id}` and
+            `/members` to see the role transitions).
+        '501':
+          $ref: '#/components/responses/NotImplemented'
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -1720,6 +1995,24 @@ components:
         server replays the original response for any repeat within a
         24-hour window.
       schema: { type: string, maxLength: 255 }
+    MemberId:
+      in: path
+      name: member_id
+      required: true
+      description: Membership record ID (`mem_…`).
+      schema:
+        type: string
+        pattern: '^mem_[a-zA-Z0-9]+$'
+        example: 'mem_01H7TC8DZK9YV2QHE4N7X3WPMA'
+    InviteId:
+      in: path
+      name: invite_id
+      required: true
+      description: Member-invitation record ID (`inv_…`).
+      schema:
+        type: string
+        pattern: '^inv_[a-zA-Z0-9]+$'
+        example: 'inv_01H7TC8DZK9YV2QHE4N7X3WPMA'
 
   responses:
     BadRequest:
@@ -1795,6 +2088,20 @@ components:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
       headers:
         X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    Gone:
+      description: The resource was once valid but is now permanently unavailable (e.g. an invitation token that has been accepted, declined, revoked, or expired).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+    NotImplemented:
+      description: The endpoint is reserved but the underlying behaviour is not yet shipped. Clients that detect `501` should not retry; the path will start returning real status codes when the feature lands.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/XRequestId' }
 
   headers:
     XRequestId:
@@ -1854,6 +2161,8 @@ components:
             - confirmation_required
             - upstream_error
             - internal_error
+            - gone
+            - not_implemented
         message:
           type: string
           description: Human-readable description suitable for logging or surfacing to administrators.
@@ -2008,27 +2317,44 @@ components:
           minimum: 0
           description: Events created within the current billing period.
 
+    MemberRole:
+      type: string
+      description: |
+        Org-wide role. Sporkops does not currently split roles per
+        product — a member's role applies to every product the org
+        subscribes to. Scope-level granularity is reserved for API keys
+        (api-conventions.md §2).
+      enum: [owner, admin, member]
+
     Member:
       type: object
-      required: [id, organization_id, email, role, status]
+      description: |
+        An accepted membership record. Pre-acceptance invitations live
+        in the separate `MemberInvite` schema; an invitation flips into
+        a `Member` on accept.
+      required: [id, organization_id, email, role, is_agency, created_at, updated_at]
       properties:
         id: { type: string, pattern: '^mem_[a-zA-Z0-9]+$' }
         organization_id: { type: string, pattern: '^org_[a-zA-Z0-9]+$' }
-        user_id: { type: string }
+        user_id:
+          type: string
+          description: |
+            The platform-wide user identifier this membership grants
+            access through. Polymorphic — the Firebase UID for
+            dashboard users, the API-key ID for service identities.
         email: { type: string, format: email }
-        role:
-          type: string
-          enum: [owner, member]
-        status:
-          type: string
-          enum: [pending, accepted]
-        invited_by:
-          type: string
-          nullable: true
-        expires_at:
-          type: string
-          format: date-time
-          nullable: true
+        role: { $ref: '#/components/schemas/MemberRole' }
+        is_agency:
+          type: boolean
+          default: false
+          description: |
+            True when this membership represents an external agency
+            operator rather than someone inside the customer
+            organization. Permission-wise identical to a regular
+            member of the same role; surfaced for dashboard UX (badges
+            in member lists, "X works for an agency" hints in audit
+            views) and for the multi-client agency pattern documented
+            in api-conventions.md §3a.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -2046,6 +2372,97 @@ components:
           type: array
           items: { $ref: '#/components/schemas/Member' }
         meta: { $ref: '#/components/schemas/PageMeta' }
+
+    MemberUpdate:
+      type: object
+      description: |
+        Merge-patch body for `PATCH /orgs/{org_id}/members/{member_id}`.
+        Fields omitted are left unchanged. Demoting the only `owner`
+        returns `409 conflict`; promote another member to `owner`
+        first.
+      properties:
+        role: { $ref: '#/components/schemas/MemberRole' }
+        is_agency: { type: boolean }
+
+    MemberInvite:
+      type: object
+      description: |
+        A pre-acceptance invitation. The recipient's one-time token is
+        delivered out-of-band (email) and is never returned via the
+        API after creation — it can only be re-minted via the
+        `resend` endpoint.
+      required: [id, organization_id, email, role, is_agency, status, invited_by, invited_at, expires_at]
+      properties:
+        id: { type: string, pattern: '^inv_[a-zA-Z0-9]+$' }
+        organization_id: { type: string, pattern: '^org_[a-zA-Z0-9]+$' }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/MemberRole' }
+        is_agency:
+          type: boolean
+          default: false
+          description: "When true, the resulting membership is created with `is_agency: true`."
+        status:
+          type: string
+          enum: [pending, accepted, declined, expired, revoked]
+        invited_by:
+          type: string
+          description: User ID of the admin or owner who created this invite.
+        invited_at: { type: string, format: date-time }
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            Seven days after `invited_at` by default. After expiry the
+            recipient's token returns `410 gone`; admins can resend to
+            mint a fresh one.
+        accepted_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when the invitation flips to `accepted`.
+
+    MemberInviteEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/MemberInvite' }
+
+    MemberInviteList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/MemberInvite' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    MemberInviteCreate:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/MemberRole' }
+        is_agency:
+          type: boolean
+          default: false
+          description: "When true, the resulting `Member` carries `is_agency: true`."
+
+    OwnerTransferRequest:
+      type: object
+      description: |
+        Reserved request body for `POST /orgs/{org_id}/owner-transfer`.
+        The endpoint returns `501 not_implemented` today; this schema
+        is published so clients can be coded against the eventual
+        shape. Track in docs/roadmap.md §B5.
+      required: [new_owner_member_id, confirm]
+      properties:
+        new_owner_member_id:
+          type: string
+          pattern: '^mem_[a-zA-Z0-9]+$'
+          description: Member ID of the admin or member who will become the new `owner`.
+        confirm:
+          type: boolean
+          description: Must be `true`. Guard against accidental owner handoffs.
 
     # -------------------------------------------------------------------
     # API keys
@@ -2187,6 +2604,12 @@ components:
         - storage.file.updated
         - storage.file.deleted
         - storage.file.shared
+        # Members (cross-product, fires for every org-membership transition)
+        - member.invited
+        - member.accepted
+        - member.declined
+        - member.role_changed
+        - member.removed
         # Cross-product (already used by monitoring; listed for discoverability)
         - monitor.up
         - monitor.down
