@@ -1,0 +1,10 @@
+extends:
+  - recommended
+
+rules:
+  # We require error-response coverage via a stricter custom Spectral rule
+  # (`worksuite-error-response-coverage` in `.spectral.yaml`) that allows
+  # `default`, any 4XX, or specific status codes — Redocly's default flags
+  # operations without an explicit 4XX even when they're covered by a
+  # `default`, which is noisy without buying us anything.
+  operation-4xx-response: off
