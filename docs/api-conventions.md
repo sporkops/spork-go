@@ -57,6 +57,31 @@ User-scoped exceptions (anything that necessarily transcends one org):
 - `GET /v1/members/invites`
 - `POST /v1/members/accept`
 
+### 3a. Agencies and multi-client access
+
+Sporkops does **not** sell through resellers — every organization owns
+its own billing relationship and support contract directly with us. But
+small agencies routinely manage Worksuite (or monitoring, or status
+pages) for several client orgs. The supported pattern:
+
+1. Each client signs up directly and creates their own org.
+2. The agency operator is invited as a **member** of each client's org
+   via `POST /v1/members/accept` after a `GET /v1/members/invites`.
+3. `GET /v1/users/me/orgs` returns every org the agency operator
+   belongs to — that endpoint is the canonical "agency dashboard"
+   feed.
+4. For automated work, the operator mints **one API key per client
+   org** they need to script against. Each key is bound to one org
+   (§2) so a leak is blast-radius-limited to one client.
+5. Audit-trail entries log the agency operator as the `actor` against
+   the client's org — every action is attributable to a human, even
+   when an agency key was used.
+
+What we deliberately don't ship: a "platform key" that authenticates
+across orgs without explicit membership, white-label rebranding, or
+billing pass-through. Those would turn the agency into a reseller and
+break the direct-customer-relationship invariant.
+
 ## 4. Naming
 
 - **JSON field names**: `snake_case` exclusively. Never `camelCase`,
@@ -112,7 +137,12 @@ HMAC signs `<timestamp>.<raw_body>`.)
 
 ## 7. Update semantics
 
-- **`PATCH`** = merge semantics. Fields omitted are left unchanged.
+- **`PATCH`** = **JSON Merge Patch ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396))**.
+  Fields omitted are left unchanged; fields set to `null` are cleared.
+  Request bodies use `Content-Type: application/merge-patch+json`
+  (the standard `application/json` is also accepted for ergonomics).
+  We do **not** support [JSON Patch (RFC 6902)](https://www.rfc-editor.org/rfc/rfc6902)
+  operation arrays — pick one model and stick to it.
 - **`POST`** = create or trigger an action.
 - **`PUT`** = full replacement. **Avoid** for new APIs — the legacy
   monitoring/status-pages PUT/PATCH split was a papercut we are not
@@ -121,7 +151,7 @@ HMAC signs `<timestamp>.<raw_body>`.)
   to a dedicated sub-resource.
 
 Every `PATCH` operation's description states "merge semantics" verbatim
-— enforced by the `worksuite-patch-describes-merge` Spectral rule.
+— enforced by the `sporkops-patch-describes-merge` Spectral rule.
 
 ## 8. List responses
 
@@ -198,10 +228,15 @@ errors. Support tickets include it.
 
 ## 12. Idempotency
 
-`POST` operations accept an optional `Idempotency-Key: <client-key>`
-header. The server replays the original response for any repeat within
-a 24-hour window. Use stable, semantically-meaningful keys
-(`create-monitor-acme-prod`), not random UUIDs per retry.
+`POST`, `PATCH`, and `DELETE` operations accept an optional
+`Idempotency-Key: <client-key>` header. The server replays the original
+response for any repeat within a 24-hour window. Use stable,
+semantically-meaningful keys (`create-monitor-acme-prod`,
+`patch-event-acme-q3-offsite`), not random UUIDs per retry.
+
+`PATCH` is included so a retried merge-patch doesn't double-apply when
+the body contains computed deltas (counters, append-only arrays).
+`GET` is excluded — it's already idempotent by definition.
 
 ## 13. Rate limits and retries
 
@@ -267,3 +302,13 @@ Every spec ships with:
 SSO is on the roadmap. Endpoints that will be SSO-gated carry an
 `x-sso-required: true` vendor extension today so when SSO ships, the
 enforcement is a configuration toggle rather than a path migration.
+
+## 19. What's not in this doc yet
+
+This document records the conventions a Sporkops API must follow
+**today**. Gaps and proposals — JMAP parity for Worksuite Mail,
+conditional requests (`ETag` / `If-Match`), batch operations,
+per-operation security scopes, data residency, customer-managed
+encryption keys, DSAR/GDPR export — live in
+[`./roadmap.md`](./roadmap.md). When a roadmap item lands, it moves
+into a numbered section here and stops being a footnote.
