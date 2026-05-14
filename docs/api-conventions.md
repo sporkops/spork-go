@@ -52,10 +52,12 @@ User-scoped exceptions (anything that necessarily transcends one org):
 
 - `GET /v1/users/me`
 - `GET /v1/users/me/orgs`
+- `GET /v1/users/me/invites`
+- `POST /v1/users/me/invites/resolve` (exchange an emailed token for the invite record)
+- `POST /v1/users/me/invites/{invite_id}/accept`
+- `POST /v1/users/me/invites/{invite_id}/decline`
 - `GET /v1/regions` (monitoring only)
 - `POST /v1/orgs` (create a new org — not callable with an API key)
-- `GET /v1/members/invites`
-- `POST /v1/members/accept`
 
 ### 3a. Agencies and multi-client access
 
@@ -65,15 +67,23 @@ small agencies routinely manage Worksuite (or monitoring, or status
 pages) for several client orgs. The supported pattern:
 
 1. Each client signs up directly and creates their own org.
-2. The agency operator is invited as a **member** of each client's org
-   via `POST /v1/members/accept` after a `GET /v1/members/invites`.
+2. The agency operator is invited as a **member** of each client's org.
+   The client's admin calls `POST /v1/orgs/{org_id}/invites` with
+   `is_agency: true`; the operator follows the emailed magic link,
+   exchanges the token via `POST /v1/users/me/invites/resolve`, and
+   accepts via `POST /v1/users/me/invites/{invite_id}/accept`.
 3. `GET /v1/users/me/orgs` returns every org the agency operator
    belongs to — that endpoint is the canonical "agency dashboard"
-   feed.
-4. For automated work, the operator mints **one API key per client
+   feed. `GET /v1/users/me/invites` covers the pending half.
+4. The resulting `Member` record carries `is_agency: true`. Permissions
+   are identical to a same-role non-agency member; the flag is for
+   dashboard UX (badges, audit-view hints) and so reports can answer
+   "which of our members are external operators" without inferring it
+   from email domains.
+5. For automated work, the operator mints **one API key per client
    org** they need to script against. Each key is bound to one org
    (§2) so a leak is blast-radius-limited to one client.
-5. Audit-trail entries log the agency operator as the `actor` against
+6. Audit-trail entries log the agency operator as the `actor` against
    the client's org — every action is attributable to a human, even
    when an agency key was used.
 
@@ -209,15 +219,22 @@ Stable, machine-readable codes (every product reuses these):
 | `validation_error` | 400 | Input failed schema/business validation; `details` populated. |
 | `authentication_required` | 401 | No credentials. |
 | `invalid_api_key` | 401 | Credentials parsed but rejected. |
-| `insufficient_scope` | 403 | Authed but the key lacks the required scope. |
+| `insufficient_scope` | 403 | Authed but the API key lacks the required scope. |
+| `insufficient_role` | 403 | Authed, but the caller's org role or principal type doesn't permit this operation (e.g. an admin acting on an owner, or an API key calling a user-session-only endpoint). |
 | `org_mismatch` | 403 | Path `org_id` ≠ key's bound org. |
 | `not_found` | 404 | Resource doesn't exist or caller can't see it. |
-| `conflict` | 409 | Business-rule conflict (e.g. deleting an org with an active subscription). |
+| `conflict` | 409 | Generic business-rule conflict (e.g. deleting an org with an active subscription). Prefer a more specific code below where one applies. |
+| `member_exists` | 409 | The target email already has an accepted membership in the org. |
+| `invite_terms_conflict` | 409 | A pending invite for this email already exists with a different `role` or `is_agency`. Revoke or resend it instead of re-inviting. |
+| `invite_decided` | 409 | The invitation has been decided (`accepted`/`declined`/`revoked`) and can no longer be revoked or resent. An `expired` invitation is still actionable — it can be resent or revoked. |
+| `last_owner` | 409 | The operation would leave the org with no `owner`. Move ownership first (owner-transfer flow). |
 | `rate_limited` | 429 | Honour `Retry-After`. |
 | `quota_exceeded` | 402 / 413 | Per-usage cap hit (storage, send rate, etc.). |
 | `payment_required` | 402 | Plan doesn't include the feature. |
 | `confirmation_required` | 400 | Destructive action needs an explicit `confirm` body field. |
 | `invalid_resource_type` | 400 | Operation called on a resource of the wrong type. |
+| `gone` | 410 | The resource was once valid but is now permanently unavailable (e.g. an accepted, declined, revoked, or expired invitation token). |
+| `not_implemented` | 501 | The endpoint is reserved but the underlying behaviour is not yet shipped. Do not retry. |
 | `upstream_error` | 502 / 503 | Transient infra failure. |
 | `internal_error` | 500 | Bug. Include `request_id` when filing a support ticket. |
 

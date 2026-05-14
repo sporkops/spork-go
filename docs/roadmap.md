@@ -105,21 +105,22 @@ Mail-class). Tied to JMAP `Email/changes` in section A.
 
 ### B5. Member management endpoints
 
-The spec exposes `GET /v1/orgs/{org_id}/members` and
-`/members/me` but not invite / role-change / remove. The conventions
-doc references `GET /v1/members/invites` and `POST /v1/members/accept`
-without defining their schemas.
+**Status:** mostly shipped — invite + role-change + remove are in the
+spec. The agency model is a `Member.is_agency` boolean rather than a
+separate role; `MemberRole` enumerates `[owner, admin, member]`.
 
-**Proposal:**
+**Still outstanding:**
 
-- `POST /v1/orgs/{org_id}/members/invites` (admin creates invite)
-- `GET /v1/members/invites` (user lists pending invites across orgs)
-- `POST /v1/members/accept` / `POST /v1/members/decline`
-- `PATCH /v1/orgs/{org_id}/members/{member_id}` (change role)
-- `DELETE /v1/orgs/{org_id}/members/{member_id}` (remove)
-
-Roles enum: `owner`, `admin`, `member`, `agent` (the agency role, see
-[api-conventions §3a](./api-conventions.md#3a-agencies-and-multi-client-access)).
+- **Owner transfer.** `POST /v1/orgs/{org_id}/owner-transfer` is
+  reserved in the spec but returns `501 not_implemented`. Implement
+  the atomic two-sided transfer (demote current owner + promote
+  target in one transaction; require `confirm: true`) when the
+  product flow is designed.
+- **Self-removal.** `DELETE /v1/orgs/{org_id}/members/me` is
+  intentionally not exposed yet. Add when we decide whether
+  last-owner self-removal blocks or auto-transfers (it should block,
+  but the UX flow needs to lead the user to the transfer endpoint
+  once that ships).
 
 ### B6. Data residency
 
@@ -183,6 +184,53 @@ when this list grows:
 - Working hours + default reminder per user.
 - Calendar colors (server-stored, not just client-side).
 - iCal (`.ics`) import/export.
+
+### B11. Webhook event payload schemas
+
+`WebhookEventName` enumerates the event types a subscription can
+filter on (`mail.*`, `calendar.*`, `storage.*`, `member.*`,
+`monitor.*`), but the spec defines **no delivery envelope or
+per-event payload schema** — a subscriber has an event name to
+subscribe to and nothing to code their handler against. This gap
+predates the member-management work; the `member.*` additions just
+made it more visible.
+
+**Proposal:**
+
+- A `WebhookDelivery` envelope: `{ id, event, created_at,
+  organization_id, data }` plus the existing signature headers.
+- A discriminated `data` payload per event family. For `member.*`,
+  `data` is the relevant `Member` or `MemberInvite` resource; a
+  `member.role_changed` payload additionally carries the previous
+  role.
+- Document delivery semantics: at-least-once, ordering not
+  guaranteed, retry/backoff schedule, signature verification.
+
+### B12. Retrofit the spork-go SDK to the formalized schemas
+
+The hand-written SDK structs in `models.go` predate the OpenAPI spec
+and now diverge from it. This is **intentional** — per the
+`openapi/README.md` plan, the spec is the source of truth and each
+product's SDK gets retrofitted against it — but the divergence must
+be tracked so it isn't mistaken for a bug. Known gaps as of the
+member-management work:
+
+- `Member` still carries `status` + `expires_at` (the spec split
+  pre-acceptance state into a separate `MemberInvite`), lacks
+  `is_agency`, and its `role` is `owner|member` (the spec adds
+  `admin`). `user_id` is `omitempty` but the spec now requires it.
+- `InviteMemberInput` lacks `is_agency`; there is no SDK type for
+  `MemberInvite`, `MemberInviteCreate`, or the invite list/envelope.
+- `AcceptInviteInput{token}` / `AcceptInviteResult{status}` reflect
+  the old `POST /members/accept` shape. The spec replaces that with
+  `POST /users/me/invites/resolve` (token → `MemberInvite`) and
+  `POST /users/me/invites/{invite_id}/accept` (returns the new
+  `Member`).
+- `TransferOwnershipInput` exists but the spec's owner-transfer
+  endpoint is a `501` stub (§B5) — align both when that ships.
+
+Do this retrofit as a dedicated SDK PR (it touches `members.go`,
+`models.go`, and their tests); keep it out of spec-only changes.
 
 ---
 
