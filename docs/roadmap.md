@@ -185,6 +185,27 @@ when this list grows:
 - Calendar colors (server-stored, not just client-side).
 - iCal (`.ics`) import/export.
 
+### B11. Webhook event payload schemas
+
+`WebhookEventName` enumerates the event types a subscription can
+filter on (`mail.*`, `calendar.*`, `storage.*`, `member.*`,
+`monitor.*`), but the spec defines **no delivery envelope or
+per-event payload schema** — a subscriber has an event name to
+subscribe to and nothing to code their handler against. This gap
+predates the member-management work; the `member.*` additions just
+made it more visible.
+
+**Proposal:**
+
+- A `WebhookDelivery` envelope: `{ id, event, created_at,
+  organization_id, data }` plus the existing signature headers.
+- A discriminated `data` payload per event family. For `member.*`,
+  `data` is the relevant `Member` or `MemberInvite` resource; a
+  `member.role_changed` payload additionally carries the previous
+  role.
+- Document delivery semantics: at-least-once, ordering not
+  guaranteed, retry/backoff schedule, signature verification.
+
 ---
 
 ## C. Spec-quality polish (do anytime)

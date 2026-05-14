@@ -219,10 +219,15 @@ Stable, machine-readable codes (every product reuses these):
 | `validation_error` | 400 | Input failed schema/business validation; `details` populated. |
 | `authentication_required` | 401 | No credentials. |
 | `invalid_api_key` | 401 | Credentials parsed but rejected. |
-| `insufficient_scope` | 403 | Authed but the key lacks the required scope. |
+| `insufficient_scope` | 403 | Authed but the API key lacks the required scope. |
+| `insufficient_role` | 403 | Authed, but the caller's org role or principal type doesn't permit this operation (e.g. an admin acting on an owner, or an API key calling a user-session-only endpoint). |
 | `org_mismatch` | 403 | Path `org_id` ≠ key's bound org. |
 | `not_found` | 404 | Resource doesn't exist or caller can't see it. |
-| `conflict` | 409 | Business-rule conflict (e.g. deleting an org with an active subscription). |
+| `conflict` | 409 | Generic business-rule conflict (e.g. deleting an org with an active subscription). Prefer a more specific code below where one applies. |
+| `member_exists` | 409 | The target email already has an accepted membership in the org. |
+| `invite_terms_conflict` | 409 | A pending invite for this email already exists with a different `role` or `is_agency`. Revoke or resend it instead of re-inviting. |
+| `invite_decided` | 409 | The invitation has been decided (`accepted`/`declined`/`revoked`) and can no longer be revoked or resent. An `expired` invitation is still actionable — it can be resent or revoked. |
+| `last_owner` | 409 | The operation would leave the org with no `owner`. Move ownership first (owner-transfer flow). |
 | `rate_limited` | 429 | Honour `Retry-After`. |
 | `quota_exceeded` | 402 / 413 | Per-usage cap hit (storage, send rate, etc.). |
 | `payment_required` | 402 | Plan doesn't include the feature. |

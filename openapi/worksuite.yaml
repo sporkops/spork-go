@@ -176,7 +176,7 @@ paths:
 
         Requires a human user session. API keys are org-bound and have
         no associated email, so calling this with an API key returns
-        `403 forbidden` with `code: "insufficient_scope"`.
+        `403 forbidden` with `code: "insufficient_role"`.
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
@@ -214,7 +214,7 @@ paths:
         Requires a human user session. API keys are org-bound and have
         no associated email to match against, so calling this with an
         API key returns `403 forbidden` with
-        `code: "insufficient_scope"`.
+        `code: "insufficient_role"`.
       requestBody:
         required: true
         content:
@@ -248,8 +248,20 @@ paths:
         against the inviting org.
 
         Requires a human user session — not callable with an API key
-        (`403 forbidden`, `code: "insufficient_scope"`). The caller's
-        authenticated email must match the invitation's `email`.
+        (`403 forbidden`, `code: "insufficient_role"`).
+
+        **Email binding** — invitations are bound to the exact address
+        they were sent to. The caller's authenticated account email
+        must equal the invitation's `email`, otherwise `403 forbidden`.
+        A user whose account email differs from the invited address
+        cannot accept (and will not see the invite in
+        `GET /users/me/invites`); the inviting admin must revoke and
+        re-send to the account's real address.
+
+        Returns `409 conflict` with `code: "member_exists"` when the
+        caller already holds a membership in the inviting org (e.g. the
+        invite is redundant); `410 gone` when the invitation is no
+        longer `pending`.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
@@ -259,6 +271,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/MemberEnvelope' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           $ref: '#/components/responses/Conflict'
@@ -280,13 +293,16 @@ paths:
         inviting org.
 
         Requires a human user session — not callable with an API key
-        (`403 forbidden`, `code: "insufficient_scope"`). The caller's
-        authenticated email must match the invitation's `email`.
+        (`403 forbidden`, `code: "insufficient_role"`). The caller's
+        authenticated account email must match the invitation's
+        `email` (see `acceptInvite` for the email-binding rule);
+        otherwise `403 forbidden`.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '204': { description: Invitation declined. }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '410':
           $ref: '#/components/responses/Gone'
@@ -536,7 +552,7 @@ paths:
         **Caller authority** — admins and owners can call this, but an
         admin may only act on `admin`- and `member`-role targets. Any
         attempt by an admin to modify an `owner`-role member returns
-        `403 forbidden` with `code: "insufficient_scope"`; only another
+        `403 forbidden` with `code: "insufficient_role"`; only another
         owner can edit an owner.
 
         **No promotion to `owner`** — `role` accepts only `admin` and
@@ -546,7 +562,7 @@ paths:
         flow. Passing `role: owner` returns `400 validation_error`.
 
         **Last-owner protection** — demoting the only `owner` returns
-        `409 conflict` with `code: "conflict"`. Because promotion to
+        `409 conflict` with `code: "last_owner"`. Because promotion to
         `owner` is not available here, the only way to change which
         member holds `owner` is the owner-transfer flow (not yet
         implemented — see `docs/roadmap.md` §B5).
@@ -584,11 +600,11 @@ paths:
         **Caller authority** — admins and owners can call this, but an
         admin may only remove `admin`- and `member`-role targets. An
         admin removing an `owner`-role member returns `403 forbidden`
-        with `code: "insufficient_scope"`; only another owner can
+        with `code: "insufficient_role"`; only another owner can
         remove an owner.
 
         **Last-owner protection** — removing the only remaining `owner`
-        returns `409 conflict` with `code: "conflict"`; ownership must
+        returns `409 conflict` with `code: "last_owner"`; ownership must
         first move to another member via the owner-transfer flow (not
         yet implemented; see `docs/roadmap.md` §B5).
 
@@ -658,14 +674,15 @@ paths:
         matches — see below):
 
         - An `email` that already has an **accepted membership** returns
-          `409 conflict`.
+          `409 conflict` with `code: "member_exists"`.
         - An `email` that already has a **pending invite with the same
           `role` and `is_agency`** is an idempotent no-op: the existing
           invite is returned `200` and its token is preserved.
         - An `email` that already has a **pending invite with a
-          different `role` or `is_agency`** returns `409 conflict`.
-          Revoke the existing invite first, or resend it — this
-          endpoint never silently overwrites a pending invite's terms.
+          different `role` or `is_agency`** returns `409 conflict` with
+          `code: "invite_terms_conflict"`. Revoke the existing invite
+          first, or resend it — this endpoint never silently overwrites
+          a pending invite's terms.
 
         **`Idempotency-Key` vs. e-mail idempotency** — these are
         independent layers. A request whose `Idempotency-Key` matches a
@@ -729,8 +746,11 @@ paths:
       summary: Revoke a pending invitation.
       description: |
         Flips the invitation to `status: revoked`. The recipient's
-        token stops working immediately. Already-accepted invitations
-        return `409 conflict` — remove the resulting member instead.
+        token stops working immediately. `pending` and `expired`
+        invitations can be revoked; an already-decided invitation
+        (`accepted`/`declined`/`revoked`) returns `409 conflict` with
+        `code: "invite_decided"` — for an accepted invite, remove the
+        resulting member instead.
       responses:
         '204': { description: Invitation revoked. }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -751,8 +771,10 @@ paths:
       description: |
         Mints a fresh one-time token, invalidates the previous one, and
         re-emails the recipient. The `MemberInvite.expires_at` resets
-        to seven days from now. No-op on `accepted`/`declined`/`revoked`
-        invitations — returns `409 conflict`.
+        to seven days from now. `pending` and `expired` invitations can
+        be resent; an already-decided invitation
+        (`accepted`/`declined`/`revoked`) returns `409 conflict` with
+        `code: "invite_decided"`.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
@@ -2311,9 +2333,14 @@ components:
             - authentication_required
             - invalid_api_key
             - insufficient_scope
+            - insufficient_role
             - org_mismatch
             - not_found
             - conflict
+            - member_exists
+            - invite_terms_conflict
+            - invite_decided
+            - last_owner
             - rate_limited
             - quota_exceeded
             - payment_required
@@ -2815,6 +2842,11 @@ components:
 
     WebhookEventName:
       type: string
+      description: |
+        The event types a webhook subscription can filter on. NOTE:
+        the per-event delivery payload is not yet modelled in this
+        spec — see docs/roadmap.md §B11. Subscribers should treat
+        delivery bodies as forward-compatible until that lands.
       enum:
         # Mail
         - mail.received
