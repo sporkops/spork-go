@@ -73,6 +73,12 @@ tags:
     description: Cross-product organization metadata.
   - name: Members
     description: Cross-product organization membership.
+  - name: Invitations
+    description: |
+      Cross-product organization invitations. Org-scoped operations
+      (`/orgs/{org_id}/invites`) are role-gated to admins and owners;
+      recipient-side operations (`/users/me/invites`) require a human
+      user session and are not callable with an API key.
   - name: API Keys
     description: Cross-product API key management.
   - name: Webhooks
@@ -159,7 +165,7 @@ paths:
 
   /users/me/invites:
     get:
-      tags: [Members]
+      tags: [Invitations]
       operationId: listMyInvites
       summary: List pending invitations for the authenticated user.
       description: |
@@ -167,6 +173,10 @@ paths:
         address across every Sporkops organization. The agency operator
         pattern (api-conventions.md §3a) relies on this endpoint to
         present a unified "you've been invited to N orgs" view.
+
+        Requires a human user session. API keys are org-bound and have
+        no associated email, so calling this with an API key returns
+        `403 forbidden` with `code: "insufficient_scope"`.
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
@@ -182,7 +192,7 @@ paths:
 
   /users/me/invites/resolve:
     post:
-      tags: [Members]
+      tags: [Invitations]
       operationId: resolveInviteToken
       summary: Resolve a one-time invitation token to its invite record.
       description: |
@@ -200,6 +210,11 @@ paths:
         a token whose invitation has already been accepted, declined,
         revoked, or expired. The caller's authenticated email must
         match the invitation's `email`, otherwise `403 forbidden`.
+
+        Requires a human user session. API keys are org-bound and have
+        no associated email to match against, so calling this with an
+        API key returns `403 forbidden` with
+        `code: "insufficient_scope"`.
       requestBody:
         required: true
         content:
@@ -223,7 +238,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/InviteId'
     post:
-      tags: [Members]
+      tags: [Invitations]
       operationId: acceptInvite
       summary: Accept an organization invitation.
       description: |
@@ -231,6 +246,10 @@ paths:
         the invite belonged to. The corresponding `MemberInvite` flips
         to `status: accepted` and a `member.accepted` webhook fires
         against the inviting org.
+
+        Requires a human user session — not callable with an API key
+        (`403 forbidden`, `code: "insufficient_scope"`). The caller's
+        authenticated email must match the invitation's `email`.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
@@ -252,13 +271,17 @@ paths:
     parameters:
       - $ref: '#/components/parameters/InviteId'
     post:
-      tags: [Members]
+      tags: [Invitations]
       operationId: declineInvite
       summary: Decline an organization invitation.
       description: |
         The `MemberInvite` flips to `status: declined`. No membership is
         created. A `member.declined` webhook fires against the
         inviting org.
+
+        Requires a human user session — not callable with an API key
+        (`403 forbidden`, `code: "insufficient_scope"`). The caller's
+        authenticated email must match the invitation's `email`.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
@@ -508,8 +531,13 @@ paths:
       summary: Change a member's role or flip the agency flag (merge semantics).
       description: |
         Partial update with merge semantics (RFC 7396): fields omitted
-        from the body are left unchanged. Only admins and owners can
-        call this.
+        from the body are left unchanged.
+
+        **Caller authority** — admins and owners can call this, but an
+        admin may only act on `admin`- and `member`-role targets. Any
+        attempt by an admin to modify an `owner`-role member returns
+        `403 forbidden` with `code: "insufficient_scope"`; only another
+        owner can edit an owner.
 
         **No promotion to `owner`** — `role` accepts only `admin` and
         `member` here (see `AssignableMemberRole`). Granting ownership
@@ -551,11 +579,18 @@ paths:
       operationId: deleteMember
       summary: Remove a member from the organization.
       description: |
-        Hard-removes the member. Admins and owners only. Returns
-        `409 conflict` with `code: "conflict"` when called against the
-        only remaining `owner` — ownership must first move to another
-        member via the owner-transfer flow (not yet implemented; see
-        `docs/roadmap.md` §B5).
+        Hard-removes the member.
+
+        **Caller authority** — admins and owners can call this, but an
+        admin may only remove `admin`- and `member`-role targets. An
+        admin removing an `owner`-role member returns `403 forbidden`
+        with `code: "insufficient_scope"`; only another owner can
+        remove an owner.
+
+        **Last-owner protection** — removing the only remaining `owner`
+        returns `409 conflict` with `code: "conflict"`; ownership must
+        first move to another member via the owner-transfer flow (not
+        yet implemented; see `docs/roadmap.md` §B5).
 
         Self-removal (a member leaving an org without admin action) is
         intentionally not supported in this release — also tracked in
@@ -573,8 +608,8 @@ paths:
     parameters:
       - $ref: '#/components/parameters/OrgId'
     get:
-      tags: [Members]
-      operationId: listMemberInvites
+      tags: [Invitations]
+      operationId: listOrganizationInvites
       summary: List invitations the organization has sent.
       description: |
         Admins and owners only. Defaults to `status: pending`; pass the
@@ -608,8 +643,8 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/ServerError' }
     post:
-      tags: [Members]
-      operationId: createMemberInvite
+      tags: [Invitations]
+      operationId: createOrganizationInvite
       summary: Invite a person to the organization.
       description: |
         Generates a one-time invite token, emails it to `email`, and
@@ -619,7 +654,8 @@ paths:
         The `email` is normalized to lowercase before any lookup or
         storage (see `MemberInviteCreate.email`).
 
-        Conflict handling:
+        Conflict handling (applies when no `Idempotency-Key` replay
+        matches — see below):
 
         - An `email` that already has an **accepted membership** returns
           `409 conflict`.
@@ -630,6 +666,14 @@ paths:
           different `role` or `is_agency`** returns `409 conflict`.
           Revoke the existing invite first, or resend it — this
           endpoint never silently overwrites a pending invite's terms.
+
+        **`Idempotency-Key` vs. e-mail idempotency** — these are
+        independent layers. A request whose `Idempotency-Key` matches a
+        prior call within the 24-hour window replays that prior
+        response verbatim (status code and body), *without*
+        re-evaluating the conflict rules above against current state.
+        The e-mail-based behaviour only applies when there is no
+        matching key.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -661,9 +705,27 @@ paths:
     parameters:
       - $ref: '#/components/parameters/OrgId'
       - $ref: '#/components/parameters/InviteId'
+    get:
+      tags: [Invitations]
+      operationId: getOrganizationInvite
+      summary: Get a single invitation by ID.
+      description: |
+        Admins and owners only. Returns the invitation in any status —
+        unlike the list endpoint, which defaults to `pending`.
+      responses:
+        '200':
+          description: The invitation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberInviteEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
     delete:
-      tags: [Members]
-      operationId: revokeMemberInvite
+      tags: [Invitations]
+      operationId: revokeOrganizationInvite
       summary: Revoke a pending invitation.
       description: |
         Flips the invitation to `status: revoked`. The recipient's
@@ -683,8 +745,8 @@ paths:
       - $ref: '#/components/parameters/OrgId'
       - $ref: '#/components/parameters/InviteId'
     post:
-      tags: [Members]
-      operationId: resendMemberInvite
+      tags: [Invitations]
+      operationId: resendOrganizationInvite
       summary: Re-send a pending invitation email.
       description: |
         Mints a fresh one-time token, invalidates the previous one, and
@@ -2445,7 +2507,7 @@ components:
         An accepted membership record. Pre-acceptance invitations live
         in the separate `MemberInvite` schema; an invitation flips into
         a `Member` on accept.
-      required: [id, organization_id, email, role, is_agency, created_at, updated_at]
+      required: [id, organization_id, user_id, email, role, is_agency, created_at, updated_at]
       properties:
         id: { type: string, pattern: '^mem_[a-zA-Z0-9]+$' }
         organization_id: { type: string, pattern: '^org_[a-zA-Z0-9]+$' }
@@ -2768,8 +2830,11 @@ components:
         - storage.file.deleted
         - storage.file.shared
         # Members (cross-product, fires for every org-membership transition).
-        # role_changed fires only on a role edit; updated covers any other
-        # mutable field (e.g. the is_agency flag).
+        # A PATCH that changes `role` emits exactly one member.role_changed
+        # (its payload still reflects any other fields changed in the same
+        # call). member.updated fires only for a PATCH that leaves `role`
+        # untouched (e.g. an is_agency-only edit). The two are mutually
+        # exclusive for a given request — never both.
         - member.invited
         - member.accepted
         - member.declined
