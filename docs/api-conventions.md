@@ -53,6 +53,7 @@ User-scoped exceptions (anything that necessarily transcends one org):
 - `GET /v1/users/me`
 - `GET /v1/users/me/orgs`
 - `GET /v1/users/me/invites`
+- `POST /v1/users/me/invites/resolve` (exchange an emailed token for the invite record)
 - `POST /v1/users/me/invites/{invite_id}/accept`
 - `POST /v1/users/me/invites/{invite_id}/decline`
 - `GET /v1/regions` (monitoring only)
@@ -67,9 +68,10 @@ pages) for several client orgs. The supported pattern:
 
 1. Each client signs up directly and creates their own org.
 2. The agency operator is invited as a **member** of each client's org.
-   The client's admin calls `POST /v1/orgs/{org_id}/members/invites`
-   with `is_agency: true`; the operator accepts via `POST
-   /v1/users/me/invites/{invite_id}/accept`.
+   The client's admin calls `POST /v1/orgs/{org_id}/invites` with
+   `is_agency: true`; the operator follows the emailed magic link,
+   exchanges the token via `POST /v1/users/me/invites/resolve`, and
+   accepts via `POST /v1/users/me/invites/{invite_id}/accept`.
 3. `GET /v1/users/me/orgs` returns every org the agency operator
    belongs to — that endpoint is the canonical "agency dashboard"
    feed. `GET /v1/users/me/invites` covers the pending half.
