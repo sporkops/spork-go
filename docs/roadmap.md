@@ -206,6 +206,32 @@ made it more visible.
 - Document delivery semantics: at-least-once, ordering not
   guaranteed, retry/backoff schedule, signature verification.
 
+### B12. Retrofit the spork-go SDK to the formalized schemas
+
+The hand-written SDK structs in `models.go` predate the OpenAPI spec
+and now diverge from it. This is **intentional** — per the
+`openapi/README.md` plan, the spec is the source of truth and each
+product's SDK gets retrofitted against it — but the divergence must
+be tracked so it isn't mistaken for a bug. Known gaps as of the
+member-management work:
+
+- `Member` still carries `status` + `expires_at` (the spec split
+  pre-acceptance state into a separate `MemberInvite`), lacks
+  `is_agency`, and its `role` is `owner|member` (the spec adds
+  `admin`). `user_id` is `omitempty` but the spec now requires it.
+- `InviteMemberInput` lacks `is_agency`; there is no SDK type for
+  `MemberInvite`, `MemberInviteCreate`, or the invite list/envelope.
+- `AcceptInviteInput{token}` / `AcceptInviteResult{status}` reflect
+  the old `POST /members/accept` shape. The spec replaces that with
+  `POST /users/me/invites/resolve` (token → `MemberInvite`) and
+  `POST /users/me/invites/{invite_id}/accept` (returns the new
+  `Member`).
+- `TransferOwnershipInput` exists but the spec's owner-transfer
+  endpoint is a `501` stub (§B5) — align both when that ships.
+
+Do this retrofit as a dedicated SDK PR (it touches `members.go`,
+`models.go`, and their tests); keep it out of spec-only changes.
+
 ---
 
 ## C. Spec-quality polish (do anytime)

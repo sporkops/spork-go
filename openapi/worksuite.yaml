@@ -9,7 +9,7 @@ openapi: 3.0.3
 
 info:
   title: Sporkops Worksuite API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Sporkops Worksuite is a per-usage alternative to traditional workspace
     suites. This document describes the Mail, Calendar, and Storage HTTP
